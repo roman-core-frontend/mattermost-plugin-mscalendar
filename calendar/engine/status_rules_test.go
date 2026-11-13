@@ -246,7 +246,7 @@ func TestSetStatusOrAskUserKeepsLastStatus(t *testing.T) {
 		}}
 		return m, s, papi, poster
 	}
-	events := []*remote.Event{testEvent("Meeting", remote.EventTypeDefault, "busy", 2)}
+	current := testEvent("Meeting", remote.EventTypeDefault, "busy", 2)
 
 	t.Run("start of the first busy event stores the manual status", func(t *testing.T) {
 		m, s, papi, _ := newEngine(t)
@@ -255,7 +255,7 @@ func TestSetStatusOrAskUserKeepsLastStatus(t *testing.T) {
 		s.EXPECT().StoreUser(user).Return(nil)
 		papi.EXPECT().UpdateMattermostUserStatus("user_mm_id", model.StatusAway).Return(nil, nil)
 
-		require.NoError(t, m.setStatusOrAskUser(user, &model.Status{Status: model.StatusOnline, Manual: true}, events, false, model.StatusAway))
+		require.NoError(t, m.setStatusOrAskUser(user, &model.Status{Status: model.StatusOnline, Manual: true}, current, false, model.StatusAway))
 		assert.Equal(t, model.StatusOnline, user.LastStatus)
 		assert.Equal(t, model.StatusAway, user.BusyStatus)
 	})
@@ -273,7 +273,7 @@ func TestSetStatusOrAskUserKeepsLastStatus(t *testing.T) {
 		s.EXPECT().StoreUser(user).Return(nil)
 		papi.EXPECT().UpdateMattermostUserStatus("user_mm_id", model.StatusDnd).Return(nil, nil)
 
-		require.NoError(t, m.setStatusOrAskUser(user, &model.Status{Status: model.StatusAway, Manual: true}, events, false, model.StatusDnd))
+		require.NoError(t, m.setStatusOrAskUser(user, &model.Status{Status: model.StatusAway, Manual: true}, current, false, model.StatusDnd))
 		assert.Equal(t, model.StatusOnline, user.LastStatus)
 		assert.Equal(t, model.StatusDnd, user.BusyStatus)
 	})
@@ -291,7 +291,7 @@ func TestSetStatusOrAskUserKeepsLastStatus(t *testing.T) {
 		s.EXPECT().StoreUser(user).Return(nil)
 		papi.EXPECT().UpdateMattermostUserStatus("user_mm_id", model.StatusDnd).Return(nil, nil)
 
-		require.NoError(t, m.setStatusOrAskUser(user, &model.Status{Status: model.StatusAway, Manual: true}, events, false, model.StatusDnd))
+		require.NoError(t, m.setStatusOrAskUser(user, &model.Status{Status: model.StatusAway, Manual: true}, current, false, model.StatusDnd))
 		assert.Equal(t, model.StatusAway, user.LastStatus)
 	})
 
@@ -320,6 +320,7 @@ func TestSetStatusOrAskUserKeepsLastStatus(t *testing.T) {
 		s.EXPECT().StoreUser(user).Return(nil)
 		poster.EXPECT().DMWithAttachments("user_mm_id", gomock.Any()).DoAndReturn(func(_ string, attachments ...*model.SlackAttachment) (string, error) {
 			require.Len(t, attachments, 1)
+			assert.Contains(t, attachments[0].Text, "Meeting", "the current event passed in is shown")
 			yes := attachments[0].Actions[0].Integration.Context
 			assert.Equal(t, true, yes[views.StatusChangeContextIsBusy])
 			assert.Equal(t, true, yes[views.StatusChangeContextKeepLastStatus])
@@ -328,7 +329,7 @@ func TestSetStatusOrAskUserKeepsLastStatus(t *testing.T) {
 			return "", nil
 		})
 
-		require.NoError(t, m.setStatusOrAskUser(user, &model.Status{Status: model.StatusAway, Manual: true}, events, false, model.StatusDnd))
+		require.NoError(t, m.setStatusOrAskUser(user, &model.Status{Status: model.StatusAway, Manual: true}, current, false, model.StatusDnd))
 		assert.Equal(t, model.StatusOnline, user.LastStatus)
 		assert.Equal(t, model.StatusAway, user.BusyStatus, "changed only when the user confirms")
 	})
