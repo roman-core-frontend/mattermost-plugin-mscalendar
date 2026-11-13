@@ -544,3 +544,32 @@ func TestSetStatusFromCalendarViewEndOfBusyPeriod(t *testing.T) {
 		assert.Equal(t, before, *user)
 	})
 }
+
+func TestStatusRuleWithoutStatus(t *testing.T) {
+	rules, err := config.ParseStatusRules(`[
+		{"title_contains": "Review", "emoji": "eyes"},
+		{"title_contains": "Обед", "status": "none", "emoji": "hamburger"}
+	]`)
+	require.NoError(t, err)
+	dndUser := &store.User{Settings: store.Settings{UpdateStatusFromOptions: store.DNDStatusOption}}
+	awayUser := &store.User{Settings: store.Settings{UpdateStatusFromOptions: store.AwayStatusOption}}
+
+	organized := testEvent("Code review", remote.EventTypeDefault, "busy", 3)
+	organized.IsOrganizer = true
+	solo := testEvent("Review notes", remote.EventTypeDefault, "free", 0)
+	lunch := testEvent("Обед", remote.EventTypeDefault, "busy", 0)
+
+	events := filterBusyAndAttendeeEvents([]*remote.Event{organized, solo, lunch}, rules)
+	assert.Equal(t, []string{"Code review", "Review notes", "Обед"}, eventSubjects(events))
+	assert.Equal(t, []string{"Code review", "Review notes"}, eventSubjects(filterStatusChangingEvents(events, rules)),
+		"a rule without a status still counts as busy, only none leaves the status unchanged")
+
+	rule := statusRuleOf(rules, organized)
+	require.NotNil(t, rule)
+	assert.Equal(t, model.StatusDnd, busyStatusForEvent(dndUser, rule), "the user's own setting is used")
+	assert.Equal(t, model.StatusAway, busyStatusForEvent(awayUser, rule), "the user's own setting is used")
+
+	emoji, text := customStatusForEvent(organized, rule)
+	assert.Equal(t, "eyes", emoji)
+	assert.Equal(t, "Code review", text)
+}

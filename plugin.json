@@ -95,7 +95,7 @@
                 "key": "StatusRules",
                 "display_name": "Status rules:",
                 "type": "longtext",
-                "help_text": "JSON array of rules applied while a calendar event is in progress. The first matching rule wins.\nCondition: 'event_type' (outOfOffice: Outlook events shown as Out of Office) or 'title_contains' (case-insensitive text in the event title).\nAction: 'status' (dnd, away, or none to leave the status unchanged), 'emoji' (emoji name, e.g. palm_tree), 'text' (custom status text, {title} is the event title; empty means the event title).",
+                "help_text": "JSON array of rules applied while a calendar event is in progress. The first matching rule wins.\nCondition: 'event_type' (outOfOffice: Outlook events shown as Out of Office) or 'title_contains' (case-insensitive text in the event title).\nAction: 'status' (dnd or away; none to leave the status unchanged; omit to use the user's own setting), 'emoji' (emoji name, e.g. palm_tree), 'text' (custom status text, {title} is the event title; empty means the event title).",
                 "placeholder": "",
                 "default": ""
             }

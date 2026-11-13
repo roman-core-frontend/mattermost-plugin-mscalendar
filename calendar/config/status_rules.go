@@ -25,7 +25,8 @@ type StatusRule struct {
 	// TitleContains matches events whose title contains this text (case-insensitive).
 	TitleContains string `json:"title_contains,omitempty"`
 
-	// Status is "dnd", "away", or "none"/empty to leave the colored status unchanged.
+	// Status is "dnd" or "away", "none" to leave the colored status unchanged,
+	// or empty to use the status from the user's settings.
 	Status string `json:"status,omitempty"`
 	// Emoji is the emoji name for the custom status, e.g. "palm_tree". Empty keeps the default.
 	Emoji string `json:"emoji,omitempty"`
@@ -73,9 +74,7 @@ func (r *StatusRule) normalize() error {
 	}
 
 	switch r.Status {
-	case "", StatusRuleStatusNoChange:
-		r.Status = StatusRuleStatusNoChange
-	case StatusRuleStatusDnd, StatusRuleStatusAway:
+	case "", StatusRuleStatusNoChange, StatusRuleStatusDnd, StatusRuleStatusAway:
 	default:
 		return fmt.Errorf(`unknown status %q, expected "dnd", "away" or "none"`, r.Status)
 	}
@@ -97,9 +96,19 @@ func (r *StatusRule) matches(eventType, titleLower string) bool {
 	return strings.Contains(titleLower, needle)
 }
 
-// ChangesStatus reports whether the rule sets a colored status.
+// ChangesStatus reports whether matching events set a colored status: the rule's own status,
+// or the status from the user's settings when the rule has none. Only "none" leaves it unchanged.
 func (r *StatusRule) ChangesStatus() bool {
-	return r.Status == StatusRuleStatusDnd || r.Status == StatusRuleStatusAway
+	return r.Status != StatusRuleStatusNoChange
+}
+
+// StatusOverride returns the colored status the rule sets instead of the one from the user's settings,
+// or an empty string when the user's settings apply.
+func (r *StatusRule) StatusOverride() string {
+	if r.Status == StatusRuleStatusDnd || r.Status == StatusRuleStatusAway {
+		return r.Status
+	}
+	return ""
 }
 
 // CustomStatusText returns the custom status text for an event with the given title.
