@@ -216,20 +216,6 @@ func (mr *MockStoreMockRecorder) DisconnectUserFromStoreIfNecessary(arg0, arg1 i
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DisconnectUserFromStoreIfNecessary", reflect.TypeOf((*MockStore)(nil).DisconnectUserFromStoreIfNecessary), arg0, arg1)
 }
 
-// ForceDeleteUser mocks base method.
-func (m *MockStore) ForceDeleteUser(arg0, arg1 string) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ForceDeleteUser", arg0, arg1)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// ForceDeleteUser indicates an expected call of ForceDeleteUser.
-func (mr *MockStoreMockRecorder) ForceDeleteUser(arg0, arg1 interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ForceDeleteUser", reflect.TypeOf((*MockStore)(nil).ForceDeleteUser), arg0, arg1)
-}
-
 // GetConnectedUserCount mocks base method.
 func (m *MockStore) GetConnectedUserCount() (uint64, error) {
 	m.ctrl.T.Helper()
