@@ -211,15 +211,27 @@ func TestGetMergedEventsWithRules(t *testing.T) {
 }
 
 func TestCurrentEvent(t *testing.T) {
+	rules := testStatusRules(t)
 	now := time.Now().UTC()
 	ooo := eventAt("Не в офисе", "outOfOffice", now.Add(-10*time.Hour), now.Add(10*time.Hour))
-	meeting := eventAt("Meeting", "default", now.Add(-5*time.Minute), now.Add(time.Hour))
+	vacation := eventAt("Отпуск", "default", now.Add(-10*time.Hour), now.Add(10*time.Hour))
+	focus := eventAt("Deep work", "focusTime", now.Add(-2*time.Hour), now.Add(time.Hour))
+	meeting := eventAt("Time to focus", "default", now.Add(-5*time.Minute), now.Add(time.Hour))
+	meeting.Attendees = []*remote.Attendee{{}}
+	meeting.IsOrganizer = true
+	other := eventAt("Standup", "default", now.Add(-3*time.Minute), now.Add(time.Hour))
 	upcoming := eventAt("Upcoming", "default", now.Add(5*time.Minute), now.Add(time.Hour))
 
-	assert.Nil(t, currentEvent(nil))
-	assert.Equal(t, "Meeting", currentEvent([]*remote.Event{ooo, meeting, upcoming}).Subject, "latest started event wins")
-	assert.Equal(t, "Не в офисе", currentEvent([]*remote.Event{ooo, upcoming}).Subject)
-	assert.Equal(t, "Upcoming", currentEvent([]*remote.Event{upcoming}).Subject)
+	assert.Nil(t, currentEvent(nil, rules))
+	assert.Equal(t, "Не в офисе", currentEvent([]*remote.Event{ooo, meeting, upcoming}, rules).Subject,
+		"an event matched by a rule wins over a later meeting")
+	assert.Equal(t, "Не в офисе", currentEvent([]*remote.Event{vacation, ooo, focus}, rules).Subject,
+		"the rule higher in the list wins")
+	assert.Equal(t, "Standup", currentEvent([]*remote.Event{meeting, other}, rules).Subject,
+		"among events without rules the latest started wins")
+	assert.Equal(t, "Standup", currentEvent([]*remote.Event{meeting, other}, nil).Subject)
+	assert.Equal(t, "Upcoming", currentEvent([]*remote.Event{upcoming}, rules).Subject)
+	assert.Equal(t, "Не в офисе", currentEvent([]*remote.Event{ooo, upcoming}, rules).Subject)
 }
 
 func TestSetStatusOrAskUserKeepsLastStatus(t *testing.T) {
