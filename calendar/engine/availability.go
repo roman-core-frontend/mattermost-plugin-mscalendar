@@ -423,11 +423,6 @@ func (m *mscalendar) setStatusFromCalendarView(user *store.User, status *model.S
 				return "", isStatusChanged, errors.Wrapf(err, "error in setting user status for user %s", user.MattermostUserID)
 			}
 			isStatusChanged = true
-
-			err = m.Store.StoreUserActiveEvents(user.MattermostUserID, []string{})
-			if err != nil {
-				return "", isStatusChanged, errors.Wrapf(err, "error in storing active events for user %s", user.MattermostUserID)
-			}
 			return message, isStatusChanged, nil
 		}
 
@@ -534,6 +529,8 @@ func (m *mscalendar) setStatusFromCalendarView(user *store.User, status *model.S
 }
 
 // setStatusOrAskUser to which status change, and whether it should update the status automatically or ask the user.
+// When the user is free, the busy period is ended in the store (active events included) once the status is changed
+// or the confirmation is sent.
 // - user: the user to change the status. We use user.LastStatus to determine the status the user had before the beginning of the meeting.
 // - currentStatus: currentStatus, to decide whether to store this status when the user is free. This gets assigned to user.LastStatus at the beginning of the meeting.
 // - current: the current event triggering this status change, shown in the confirmation; nil when the user is free
@@ -568,22 +565,29 @@ func (m *mscalendar) setStatusOrAskUser(user *store.User, currentStatus *model.S
 		}
 	}
 
+	// The user is stored only once the status is changed or the confirmation is sent: if that fails, the stored
+	// statuses still match the real one, so the next sync retries instead of losing the status to restore.
 	if !user.Settings.GetConfirmation {
-		// The user is stored only once the status is changed: if the change fails, the stored statuses
-		// still match the real one, so the next sync retries instead of losing the status to restore.
 		if _, err := m.PluginAPI.UpdateMattermostUserStatus(user.MattermostUserID, toSet); err != nil {
 			return err
 		}
-		user.LastStatus, user.BusyStatus = lastStatus, newBusyStatus
-		return m.Store.StoreUser(user)
+	} else {
+		url := fmt.Sprintf("%s%s%s", m.Config.PluginURLPath, config.PathPostAction, config.PathConfirmStatusChange)
+		if _, err := m.Poster.DMWithAttachments(user.MattermostUserID, views.RenderStatusChangeNotificationView(current, toSet, url, !isFree, busyTransition)); err != nil {
+			return err
+		}
 	}
 
-	// Likewise, the user is stored only once the confirmation is sent: if sending fails, the statuses to restore
-	// are kept for the next sync.
-	url := fmt.Sprintf("%s%s%s", m.Config.PluginURLPath, config.PathPostAction, config.PathConfirmStatusChange)
-	if _, err := m.Poster.DMWithAttachments(user.MattermostUserID, views.RenderStatusChangeNotificationView(current, toSet, url, !isFree, busyTransition)); err != nil {
-		return err
+	if isFree {
+		// The confirmation already carries the status to go back to, so the last status can be cleared too.
+		// The user is reloaded by the store, so that changes made during the sync are not overwritten.
+		if err := m.Store.ClearUserBusyPeriod(user.MattermostUserID); err != nil {
+			return err
+		}
+		user.ActiveEvents, user.LastStatus, user.BusyStatus = []string{}, lastStatus, newBusyStatus
+		return nil
 	}
+
 	user.LastStatus, user.BusyStatus = lastStatus, newBusyStatus
 	return m.Store.StoreUser(user)
 }

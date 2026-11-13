@@ -300,12 +300,16 @@ func TestSetStatusOrAskUserKeepsLastStatus(t *testing.T) {
 		m, s, papi, _ := newEngine(t)
 		user := &store.User{MattermostUserID: "user_mm_id", LastStatus: model.StatusOnline, BusyStatus: model.StatusAway, ActiveEvents: []string{"focus"}}
 
-		s.EXPECT().StoreUser(user).Return(nil)
-		papi.EXPECT().UpdateMattermostUserStatus("user_mm_id", model.StatusOnline).Return(nil, nil)
+		// The busy period is cleared on the reloaded user: the user passed in is not stored.
+		gomock.InOrder(
+			papi.EXPECT().UpdateMattermostUserStatus("user_mm_id", model.StatusOnline).Return(nil, nil),
+			s.EXPECT().ClearUserBusyPeriod("user_mm_id").Return(nil),
+		)
 
 		require.NoError(t, m.setStatusOrAskUser(user, &model.Status{Status: model.StatusAway, Manual: true}, nil, true, model.StatusDnd))
 		assert.Equal(t, "", user.LastStatus)
 		assert.Equal(t, "", user.BusyStatus)
+		assert.Empty(t, user.ActiveEvents)
 	})
 
 	t.Run("a failed status change leaves the stored user unchanged", func(t *testing.T) {
@@ -388,12 +392,18 @@ func TestSetStatusOrAskUserKeepsLastStatus(t *testing.T) {
 		user := &store.User{MattermostUserID: "user_mm_id", Settings: store.Settings{GetConfirmation: true}, BusyStatus: model.StatusAway, ActiveEvents: []string{"focus"}}
 
 		gomock.InOrder(
-			poster.EXPECT().DMWithAttachments("user_mm_id", gomock.Any()).Return("", nil),
-			s.EXPECT().StoreUser(user).Return(nil),
+			poster.EXPECT().DMWithAttachments("user_mm_id", gomock.Any()).DoAndReturn(func(_ string, attachments ...*model.SlackAttachment) (string, error) {
+				require.Len(t, attachments, 1)
+				yes := attachments[0].Actions[0].Integration.Context
+				assert.Equal(t, model.StatusOnline, yes["change_to"], "the confirmation carries the status to go back to")
+				return "", nil
+			}),
+			s.EXPECT().ClearUserBusyPeriod("user_mm_id").Return(nil),
 		)
 
 		require.NoError(t, m.setStatusOrAskUser(user, &model.Status{Status: model.StatusAway, Manual: true}, nil, true, model.StatusDnd))
 		assert.Equal(t, "", user.BusyStatus)
+		assert.Equal(t, "", user.LastStatus)
 	})
 }
 
@@ -542,10 +552,10 @@ func TestSetStatusFromCalendarViewEndOfBusyPeriod(t *testing.T) {
 		m, s, papi := newEngine(t)
 		user := newUser()
 
+		// Neither StoreUser (with the user loaded at the start of the sync) nor StoreUserActiveEvents is expected.
 		gomock.InOrder(
 			papi.EXPECT().UpdateMattermostUserStatus("user_mm_id", model.StatusOnline).Return(nil, nil),
-			s.EXPECT().StoreUser(user).Return(nil),
-			s.EXPECT().StoreUserActiveEvents("user_mm_id", []string{}).Return(nil),
+			s.EXPECT().ClearUserBusyPeriod("user_mm_id").Return(nil),
 		)
 
 		_, changed, err := m.setStatusFromCalendarView(user, &model.Status{Status: model.StatusAway}, nil, nil)
@@ -553,6 +563,35 @@ func TestSetStatusFromCalendarViewEndOfBusyPeriod(t *testing.T) {
 		assert.True(t, changed)
 		assert.Equal(t, "", user.BusyStatus)
 		assert.Equal(t, "", user.LastStatus)
+	})
+
+	t.Run("the confirmation to restore the status is sent before the busy period is cleared", func(t *testing.T) {
+		m, s, _ := newEngine(t)
+		poster := mock_bot.NewMockPoster(gomock.NewController(t))
+		m.Dependencies.Poster = poster
+		user := newUser()
+		user.Settings.GetConfirmation = true
+
+		gomock.InOrder(
+			poster.EXPECT().DMWithAttachments("user_mm_id", gomock.Any()).Return("", nil),
+			s.EXPECT().ClearUserBusyPeriod("user_mm_id").Return(nil),
+		)
+
+		_, changed, err := m.setStatusFromCalendarView(user, &model.Status{Status: model.StatusAway}, nil, nil)
+		require.NoError(t, err)
+		assert.True(t, changed)
+	})
+
+	t.Run("a failure to clear the busy period after the restore is returned", func(t *testing.T) {
+		m, s, papi := newEngine(t)
+		user := newUser()
+
+		papi.EXPECT().UpdateMattermostUserStatus("user_mm_id", model.StatusOnline).Return(nil, nil)
+		s.EXPECT().ClearUserBusyPeriod("user_mm_id").Return(errors.New("store failed"))
+
+		_, changed, err := m.setStatusFromCalendarView(user, &model.Status{Status: model.StatusAway}, nil, nil)
+		require.Error(t, err)
+		assert.False(t, changed)
 	})
 
 	t.Run("a failed restore keeps the stored user and the active events for the next sync", func(t *testing.T) {
