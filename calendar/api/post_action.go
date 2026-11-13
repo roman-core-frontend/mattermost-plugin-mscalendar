@@ -175,12 +175,15 @@ func (api *api) postActionConfirmStatusChange(w http.ResponseWriter, req *http.R
 			utils.SlackAttachmentError(w, "No state to change to.")
 			return
 		}
-		stringChangeTo := changeTo.(string)
-		prettyChangeTo, ok := request.Context["pretty_change_to"]
+		stringChangeTo, ok := changeTo.(string)
 		if !ok {
-			prettyChangeTo = changeTo
+			utils.SlackAttachmentError(w, "No state to change to.")
+			return
 		}
-		stringPrettyChangeTo := prettyChangeTo.(string)
+		stringPrettyChangeTo, ok := request.Context["pretty_change_to"].(string)
+		if !ok {
+			stringPrettyChangeTo = stringChangeTo
+		}
 
 		status, err := api.PluginAPI.GetMattermostUserStatus(mattermostUserID)
 		if err != nil {
@@ -195,14 +198,29 @@ func (api *api) postActionConfirmStatusChange(w http.ResponseWriter, req *http.R
 			return
 		}
 
-		user.LastStatus = ""
-		if status.Manual {
-			user.LastStatus = status.Status
+		// Confirmations sent before these flags existed have neither key: keep the original behavior for them.
+		isBusy, hasIsBusy := request.Context[views.StatusChangeContextIsBusy].(bool)
+		keepLastStatus, _ := request.Context[views.StatusChangeContextKeepLastStatus].(bool)
+
+		// When switching between two busy events, the current status was set by the plugin:
+		// keep the status the user had before the first event.
+		if !keepLastStatus || !user.IsPluginBusyStatus(status.Status) {
+			user.LastStatus = ""
+			if status.Manual {
+				user.LastStatus = status.Status
+			}
+		}
+		if hasIsBusy {
+			user.BusyStatus = ""
+			if isBusy {
+				user.BusyStatus = stringChangeTo
+			}
 		}
 
 		err = api.Store.StoreUser(user)
 		if err != nil {
 			utils.SlackAttachmentError(w, "Cannot update user")
+			return
 		}
 		api.PluginAPI.UpdateMattermostUserStatus(mattermostUserID, stringChangeTo)
 		returnText = fmt.Sprintf("The status has been changed to %s.", stringPrettyChangeTo)

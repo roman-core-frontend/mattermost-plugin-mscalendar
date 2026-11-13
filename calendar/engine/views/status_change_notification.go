@@ -21,20 +21,31 @@ var prettyStatuses = map[string]string{
 	model.StatusOffline: "Offline",
 }
 
-func RenderStatusChangeNotificationView(events []*remote.Event, status, url string) *model.SlackAttachment {
-	for _, e := range events {
-		if e.Start.Time().After(time.Now()) {
-			return statusChangeAttachments(e, status, url)
+// RenderStatusChangeNotificationView renders the confirmation asking the user to change their status.
+//   - current: the event the busy status comes from, shown when the user becomes busy
+//   - isBusy: whether the status is changed because the user becomes busy
+//   - keepLastStatus: whether the user switches between two busy events, so the status they had before
+//     the first event must be kept instead of being replaced with the current (plugin-set) one
+func RenderStatusChangeNotificationView(current *remote.Event, status, url string, isBusy, keepLastStatus bool) *model.SlackAttachment {
+	// Going back to the previous status has no event to show.
+	if !isBusy {
+		current = nil
+	}
+	attachment := statusChangeAttachments(current, status, url)
+
+	for _, action := range attachment.Actions {
+		if value, _ := action.Integration.Context["value"].(bool); value {
+			action.Integration.Context[StatusChangeContextIsBusy] = isBusy
+			action.Integration.Context[StatusChangeContextKeepLastStatus] = keepLastStatus
 		}
 	}
-
-	nEvents := len(events)
-	if nEvents > 0 && status == model.StatusDnd {
-		return statusChangeAttachments(events[nEvents-1], status, url)
-	}
-
-	return statusChangeAttachments(nil, status, url)
+	return attachment
 }
+
+const (
+	StatusChangeContextIsBusy         = "is_busy"
+	StatusChangeContextKeepLastStatus = "keep_last_status"
+)
 
 func RenderEventWillStartLine(subject, weblink string, startTime time.Time) string {
 	link, _ := url.QueryUnescape(weblink)

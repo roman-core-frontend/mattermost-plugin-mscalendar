@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/pkg/errors"
 	"golang.org/x/oauth2"
 
@@ -82,10 +83,30 @@ type User struct {
 	MattermostUsername    string
 	MattermostDisplayName string
 	LastStatus            string
-	WelcomeFlowStatus     WelcomeFlowStatus `json:"mattermostFlags,omitempty"`
-	ActiveEvents          []string          `json:"events"`
-	ChannelEvents         ChannelEventLink  `json:"linkedEvents,omitempty"`
-	IsCustomStatusSet     bool
+	// BusyStatus is the status the plugin set for the current busy period, empty when not set.
+	BusyStatus        string            `json:"busyStatus,omitempty"`
+	WelcomeFlowStatus WelcomeFlowStatus `json:"mattermostFlags,omitempty"`
+	ActiveEvents      []string          `json:"events"`
+	ChannelEvents     ChannelEventLink  `json:"linkedEvents,omitempty"`
+	IsCustomStatusSet bool
+}
+
+// DefaultBusyStatus returns the status chosen in the user's settings for busy events.
+func (user *User) DefaultBusyStatus() string {
+	if user.Settings.UpdateStatusFromOptions == AwayStatusOption {
+		return model.StatusAway
+	}
+	return model.StatusDnd
+}
+
+// IsPluginBusyStatus reports whether the status is the one the plugin set for the current busy period.
+// Users synced before BusyStatus was stored fall back to the status from their settings.
+func (user *User) IsPluginBusyStatus(status string) bool {
+	busyStatus := user.BusyStatus
+	if busyStatus == "" {
+		busyStatus = user.DefaultBusyStatus()
+	}
+	return status == busyStatus
 }
 
 var DefaultSettings = Settings{
@@ -338,6 +359,10 @@ func (s *pluginStore) StoreUserActiveEvents(mattermostUserID string, events []st
 		return err
 	}
 	u.ActiveEvents = events
+	if len(events) == 0 {
+		// The busy period is over, whether or not the plugin changed the status back.
+		u.BusyStatus = ""
+	}
 	return kvstore.StoreJSON(s.userKV, mattermostUserID, u)
 }
 
