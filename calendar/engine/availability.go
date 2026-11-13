@@ -369,7 +369,7 @@ func (m *mscalendar) setCustomStatusFromCalendarView(user *store.User, events []
 		return "User already has a custom status set, ignoring custom status change", isStatusChanged, nil
 	}
 
-	event := currentEvent(events)
+	event := currentEvent(events, rules)
 	emoji, text := customStatusForEvent(event, statusRuleOf(rules, event))
 	if appErr := m.PluginAPI.UpdateMattermostUserCustomStatus(user.MattermostUserID, &model.CustomStatus{
 		Emoji:     emoji,
@@ -401,7 +401,7 @@ func (m *mscalendar) setStatusFromCalendarView(user *store.User, status *model.S
 
 	busyStatus := user.DefaultBusyStatus()
 	if len(events) > 0 {
-		busyStatus = busyStatusForEvent(user, statusRuleOf(rules, currentEvent(events)))
+		busyStatus = busyStatusForEvent(user, statusRuleOf(rules, currentEvent(events, rules)))
 	}
 
 	if len(user.ActiveEvents) == 0 && len(events) == 0 {
@@ -439,7 +439,7 @@ func (m *mscalendar) setStatusFromCalendarView(user *store.User, status *model.S
 	// Events are fetched ahead of time, so the next event is already stored while the current one runs.
 	// The marker of the current event lets us notice when it starts, so that the status of its rule
 	// is applied (e.g. focus time followed by a meeting).
-	currentMarker := currentEventMarker + eventHash(currentEvent(events))
+	currentMarker := currentEventMarker + eventHash(currentEvent(events, rules))
 	remoteHashes = append(remoteHashes, currentMarker)
 
 	if len(user.ActiveEvents) == 0 {
@@ -567,7 +567,7 @@ func (m *mscalendar) setStatusOrAskUser(user *store.User, currentStatus *model.S
 	}
 
 	url := fmt.Sprintf("%s%s%s", m.Config.PluginURLPath, config.PathPostAction, config.PathConfirmStatusChange)
-	_, err = m.Poster.DMWithAttachments(user.MattermostUserID, views.RenderStatusChangeNotificationView(currentEvent(events), toSet, url, !isFree, busyTransition))
+	_, err = m.Poster.DMWithAttachments(user.MattermostUserID, views.RenderStatusChangeNotificationView(currentEvent(events, m.statusRules()), toSet, url, !isFree, busyTransition))
 	if err != nil {
 		return err
 	}
@@ -731,22 +731,35 @@ func filterStatusChangingEvents(events []*remote.Event, rules []config.StatusRul
 	return result
 }
 
-// currentEvent returns the event that defines the status now: the latest one that has already started
-// (e.g. a meeting during an all-day out-of-office event), or the first upcoming one.
+// currentEvent returns the event that defines the status now, among the events that have already started:
+// events matched by a status rule win over the others, and a rule higher in the list wins over a lower one,
+// so that e.g. an out-of-office event is not hidden by a recurring meeting. Among events of the same priority,
+// the latest started one wins. If no event has started yet, the first upcoming one is returned.
 // The events must be sorted by start time.
-func currentEvent(events []*remote.Event) *remote.Event {
-	if len(events) == 0 {
-		return nil
-	}
+func currentEvent(events []*remote.Event, rules []config.StatusRule) *remote.Event {
 	now := time.Now()
-	current := events[0]
-	for _, e := range events[1:] {
-		if e.Start.Time().After(now) {
+	var current *remote.Event
+	currentRank := 0
+	for _, e := range events {
+		if current != nil && e.Start.Time().After(now) {
 			break
 		}
-		current = e
+		rank := statusRuleRank(rules, statusRuleOf(rules, e))
+		if current == nil || rank <= currentRank {
+			current, currentRank = e, rank
+		}
 	}
 	return current
+}
+
+// statusRuleRank returns the position of the rule in the configured list, or the list length for no rule.
+func statusRuleRank(rules []config.StatusRule, rule *config.StatusRule) int {
+	for i := range rules {
+		if &rules[i] == rule {
+			return i
+		}
+	}
+	return len(rules)
 }
 
 func (m *mscalendar) statusRules() []config.StatusRule {
