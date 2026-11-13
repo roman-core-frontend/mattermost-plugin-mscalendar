@@ -199,9 +199,15 @@ func (api *api) postActionConfirmStatusChange(w http.ResponseWriter, req *http.R
 		isBusy, hasIsBusy := request.Context[views.StatusChangeContextIsBusy].(bool)
 		keepLastStatus, _ := request.Context[views.StatusChangeContextKeepLastStatus].(bool)
 
-		// When switching between two busy events, the current status was set by the plugin:
-		// keep the status the user had before the first event.
-		if !keepLastStatus || !user.IsPluginBusyStatus(status.Status) {
+		switch {
+		case hasIsBusy && !isBusy:
+			// Changing back after the busy period: the current status was set for the busy period,
+			// it is not a status to restore later.
+			user.LastStatus = ""
+		case keepLastStatus && user.IsPluginBusyStatus(status.Status):
+			// When switching between two busy events, the current status was set by the plugin:
+			// keep the status the user had before the first event.
+		default:
 			user.LastStatus = ""
 			if status.Manual {
 				user.LastStatus = status.Status
@@ -209,9 +215,18 @@ func (api *api) postActionConfirmStatusChange(w http.ResponseWriter, req *http.R
 		}
 		if hasIsBusy {
 			user.BusyStatus = ""
-			if isBusy {
+			// A confirmation clicked after the busy period ended still changes the status as asked,
+			// but there is no busy period left for the plugin to end, so the status is not remembered.
+			if isBusy && len(user.ActiveEvents) > 0 {
 				user.BusyStatus = stringChangeTo
 			}
+		}
+
+		// The user is stored only once the status is changed, so that the stored statuses match the real one.
+		if _, err = api.PluginAPI.UpdateMattermostUserStatus(mattermostUserID, stringChangeTo); err != nil {
+			utils.SlackAttachmentError(w, "Cannot update status.")
+			api.Logger.Warnf("cannot update user status, err=%s", err)
+			return
 		}
 
 		err = api.Store.StoreUser(user)
@@ -219,7 +234,6 @@ func (api *api) postActionConfirmStatusChange(w http.ResponseWriter, req *http.R
 			utils.SlackAttachmentError(w, "Cannot update user")
 			return
 		}
-		api.PluginAPI.UpdateMattermostUserStatus(mattermostUserID, stringChangeTo)
 		returnText = fmt.Sprintf("The status has been changed to %s.", stringPrettyChangeTo)
 	}
 
