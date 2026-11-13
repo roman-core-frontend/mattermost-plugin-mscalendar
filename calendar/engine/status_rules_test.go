@@ -4,6 +4,7 @@
 package engine
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -307,6 +308,36 @@ func TestSetStatusOrAskUserKeepsLastStatus(t *testing.T) {
 		assert.Equal(t, "", user.BusyStatus)
 	})
 
+	t.Run("a failed status change leaves the stored user unchanged", func(t *testing.T) {
+		m, _, papi, _ := newEngine(t)
+		user := &store.User{
+			MattermostUserID: "user_mm_id",
+			Settings:         store.Settings{UpdateStatusFromOptions: store.DNDStatusOption},
+			ActiveEvents:     []string{"focus"},
+			LastStatus:       model.StatusOnline,
+			BusyStatus:       model.StatusAway,
+		}
+		before := *user
+
+		// No StoreUser call is expected.
+		papi.EXPECT().UpdateMattermostUserStatus("user_mm_id", model.StatusDnd).Return(nil, errors.New("update failed"))
+
+		require.Error(t, m.setStatusOrAskUser(user, &model.Status{Status: model.StatusAway, Manual: true}, current, false, model.StatusDnd))
+		assert.Equal(t, before, *user)
+	})
+
+	t.Run("a failed status restore leaves the stored user unchanged", func(t *testing.T) {
+		m, _, papi, _ := newEngine(t)
+		user := &store.User{MattermostUserID: "user_mm_id", LastStatus: model.StatusOnline, BusyStatus: model.StatusAway, ActiveEvents: []string{"focus"}}
+		before := *user
+
+		// No StoreUser call is expected.
+		papi.EXPECT().UpdateMattermostUserStatus("user_mm_id", model.StatusOnline).Return(nil, errors.New("update failed"))
+
+		require.Error(t, m.setStatusOrAskUser(user, &model.Status{Status: model.StatusAway, Manual: true}, nil, true, model.StatusDnd))
+		assert.Equal(t, before, *user)
+	})
+
 	t.Run("confirmation carries the transition flags", func(t *testing.T) {
 		m, s, _, poster := newEngine(t)
 		user := &store.User{
@@ -441,4 +472,75 @@ func TestStatusRuleWithoutNormalize(t *testing.T) {
 	assert.Nil(t, config.FindStatusRule(rules, remote.EventTypeDefault, "Meeting"))
 	assert.NotNil(t, config.FindStatusRule(rules, remote.EventTypeDefault, "обед с командой"))
 	assert.Nil(t, config.FindStatusRule([]config.StatusRule{{Status: "away"}}, remote.EventTypeDefault, "Meeting"), "a rule without a condition matches nothing")
+}
+
+func TestSetStatusFromCalendarViewEndOfBusyPeriod(t *testing.T) {
+	newEngine := func(t *testing.T) (*mscalendar, *mock_store.MockStore, *mock_plugin_api.MockPluginAPI) {
+		ctrl := gomock.NewController(t)
+		s := mock_store.NewMockStore(ctrl)
+		papi := mock_plugin_api.NewMockPluginAPI(ctrl)
+		m := &mscalendar{Env: Env{
+			Config:       &config.Config{},
+			Dependencies: &Dependencies{Store: s, PluginAPI: papi},
+		}}
+		return m, s, papi
+	}
+	newUser := func() *store.User {
+		return &store.User{
+			MattermostUserID: "user_mm_id",
+			Settings:         store.Settings{UpdateStatusFromOptions: store.DNDStatusOption},
+			ActiveEvents:     []string{"meeting"},
+			LastStatus:       model.StatusOnline,
+			BusyStatus:       model.StatusAway,
+		}
+	}
+
+	t.Run("a status changed manually is kept and the busy status is cleared", func(t *testing.T) {
+		m, s, _ := newEngine(t)
+		user := newUser()
+
+		gomock.InOrder(
+			s.EXPECT().StoreUser(gomock.Any()).DoAndReturn(func(u *store.User) error {
+				assert.Equal(t, "", u.BusyStatus)
+				return nil
+			}),
+			s.EXPECT().StoreUserActiveEvents("user_mm_id", []string{}).Return(nil),
+		)
+
+		_, changed, err := m.setStatusFromCalendarView(user, &model.Status{Status: model.StatusOnline, Manual: true}, nil, nil)
+		require.NoError(t, err)
+		assert.False(t, changed)
+		assert.Equal(t, "", user.BusyStatus)
+	})
+
+	t.Run("the status set by the plugin is restored", func(t *testing.T) {
+		m, s, papi := newEngine(t)
+		user := newUser()
+
+		gomock.InOrder(
+			papi.EXPECT().UpdateMattermostUserStatus("user_mm_id", model.StatusOnline).Return(nil, nil),
+			s.EXPECT().StoreUser(user).Return(nil),
+			s.EXPECT().StoreUserActiveEvents("user_mm_id", []string{}).Return(nil),
+		)
+
+		_, changed, err := m.setStatusFromCalendarView(user, &model.Status{Status: model.StatusAway}, nil, nil)
+		require.NoError(t, err)
+		assert.True(t, changed)
+		assert.Equal(t, "", user.BusyStatus)
+		assert.Equal(t, "", user.LastStatus)
+	})
+
+	t.Run("a failed restore keeps the stored user and the active events for the next sync", func(t *testing.T) {
+		m, _, papi := newEngine(t)
+		user := newUser()
+		before := *user
+
+		// Neither StoreUser nor StoreUserActiveEvents is expected.
+		papi.EXPECT().UpdateMattermostUserStatus("user_mm_id", model.StatusOnline).Return(nil, errors.New("update failed"))
+
+		_, changed, err := m.setStatusFromCalendarView(user, &model.Status{Status: model.StatusAway}, nil, nil)
+		require.Error(t, err)
+		assert.False(t, changed)
+		assert.Equal(t, before, *user)
+	})
 }
