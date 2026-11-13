@@ -5,7 +5,9 @@ package engine
 
 import (
 	"fmt"
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -27,6 +29,9 @@ const (
 	upcomingEventNotificationWindow = (StatusSyncJobInterval * 11) / 10 // 110% of the interval
 	logTruncateMsg                  = "We've truncated the logs due to too many messages"
 	logTruncateLimit                = 5
+
+	defaultCustomStatusEmoji = "calendar"
+	defaultCustomStatusText  = "In a meeting"
 )
 
 var (
@@ -287,12 +292,13 @@ func (m *mscalendar) setUserStatuses(users []*store.User, calendarViews []*remot
 			continue
 		}
 
-		events := filterBusyAndAttendeeEvents(view.Events)
-		events = getMergedEvents(events)
+		rules := m.statusRules()
+		events := filterBusyAndAttendeeEvents(view.Events, rules)
 
 		var err error
 		if user.IsConfiguredForStatusUpdates() {
-			res, isStatusChanged, err = m.setStatusFromCalendarView(user, status, events)
+			statusEvents := getMergedEvents(filterStatusChangingEvents(events, rules), rules)
+			res, isStatusChanged, err = m.setStatusFromCalendarView(user, status, statusEvents, rules)
 			if err != nil {
 				if numberOfLogs < logTruncateLimit {
 					m.Logger.Warnf("Error setting user %s status. err=%v", user.MattermostUserID, err)
@@ -308,7 +314,7 @@ func (m *mscalendar) setUserStatuses(users []*store.User, calendarViews []*remot
 		}
 
 		if user.IsConfiguredForCustomStatusUpdates() {
-			res, isStatusChanged, err = m.setCustomStatusFromCalendarView(user, events)
+			res, isStatusChanged, err = m.setCustomStatusFromCalendarView(user, getMergedEvents(events, rules), rules)
 			if err != nil {
 				if numberOfLogs < logTruncateLimit {
 					m.Logger.Warnf("Error setting user %s custom status. err=%v", user.MattermostUserID, err)
@@ -333,7 +339,7 @@ func (m *mscalendar) setUserStatuses(users []*store.User, calendarViews []*remot
 	return utils.JSONBlock(calendarViews), numberOfUserStatusChange, numberOfUserErrorInStatusChange, nil
 }
 
-func (m *mscalendar) setCustomStatusFromCalendarView(user *store.User, events []*remote.Event) (string, bool, error) {
+func (m *mscalendar) setCustomStatusFromCalendarView(user *store.User, events []*remote.Event, rules []config.StatusRule) (string, bool, error) {
 	isStatusChanged := false
 	if !user.IsConfiguredForCustomStatusUpdates() {
 		return "User doesn't want to set custom status", isStatusChanged, nil
@@ -359,14 +365,16 @@ func (m *mscalendar) setCustomStatusFromCalendarView(user *store.User, events []
 	}
 
 	currentCustomStatus := currentUser.GetCustomStatus()
-	if currentCustomStatus != nil && !user.IsCustomStatusSet {
+	if isCustomStatusActive(currentCustomStatus) && !user.IsCustomStatusSet {
 		return "User already has a custom status set, ignoring custom status change", isStatusChanged, nil
 	}
 
+	event := currentEvent(events)
+	emoji, text := customStatusForEvent(event, statusRuleOf(rules, event))
 	if appErr := m.PluginAPI.UpdateMattermostUserCustomStatus(user.MattermostUserID, &model.CustomStatus{
-		Emoji:     "calendar",
-		Text:      "In a meeting",
-		ExpiresAt: events[0].End.Time(),
+		Emoji:     emoji,
+		Text:      text,
+		ExpiresAt: event.End.Time(),
 		Duration:  "date_and_time",
 	}); appErr != nil {
 		return "", isStatusChanged, appErr
@@ -380,7 +388,7 @@ func (m *mscalendar) setCustomStatusFromCalendarView(user *store.User, events []
 	return "", isStatusChanged, nil
 }
 
-func (m *mscalendar) setStatusFromCalendarView(user *store.User, status *model.Status, events []*remote.Event) (string, bool, error) {
+func (m *mscalendar) setStatusFromCalendarView(user *store.User, status *model.Status, events []*remote.Event, rules []config.StatusRule) (string, bool, error) {
 	isStatusChanged := false
 	currentStatus := status.Status
 	if !user.IsConfiguredForStatusUpdates() {
@@ -391,9 +399,9 @@ func (m *mscalendar) setStatusFromCalendarView(user *store.User, status *model.S
 		return "User offline and does not want status change confirmations. No status change", isStatusChanged, nil
 	}
 
-	busyStatus := model.StatusDnd
-	if user.Settings.UpdateStatusFromOptions == store.AwayStatusOption {
-		busyStatus = model.StatusAway
+	busyStatus := user.DefaultBusyStatus()
+	if len(events) > 0 {
+		busyStatus = busyStatusForEvent(user, statusRuleOf(rules, currentEvent(events)))
 	}
 
 	if len(user.ActiveEvents) == 0 && len(events) == 0 {
@@ -402,12 +410,12 @@ func (m *mscalendar) setStatusFromCalendarView(user *store.User, status *model.S
 
 	if len(user.ActiveEvents) > 0 && len(events) == 0 {
 		message := fmt.Sprintf("User is no longer busy in calendar, but is not set to busy (%s). No status change.", busyStatus)
-		if currentStatus == busyStatus {
+		if user.IsPluginBusyStatus(currentStatus) {
 			message = "User is no longer busy in calendar. Set status to online."
 			if user.LastStatus != "" {
 				message = fmt.Sprintf("User is no longer busy in calendar. Set status to previous status (%s)", user.LastStatus)
 			}
-			err := m.setStatusOrAskUser(user, status, events, true)
+			err := m.setStatusOrAskUser(user, status, events, true, busyStatus)
 			if err != nil {
 				return "", isStatusChanged, errors.Wrapf(err, "error in setting user status for user %s", user.MattermostUserID)
 			}
@@ -426,9 +434,13 @@ func (m *mscalendar) setStatusFromCalendarView(user *store.User, status *model.S
 		if e.IsCancelled {
 			continue
 		}
-		h := fmt.Sprintf("%s %s", e.ICalUID, e.Start.Time().UTC().Format(time.RFC3339))
-		remoteHashes = append(remoteHashes, h)
+		remoteHashes = append(remoteHashes, eventHash(e))
 	}
+	// Events are fetched ahead of time, so the next event is already stored while the current one runs.
+	// The marker of the current event lets us notice when it starts, so that the status of its rule
+	// is applied (e.g. focus time followed by a meeting).
+	currentMarker := currentEventMarker + eventHash(currentEvent(events))
+	remoteHashes = append(remoteHashes, currentMarker)
 
 	if len(user.ActiveEvents) == 0 {
 		var err error
@@ -437,6 +449,7 @@ func (m *mscalendar) setStatusFromCalendarView(user *store.User, status *model.S
 			if status.Manual {
 				user.LastStatus = currentStatus
 			}
+			user.BusyStatus = busyStatus
 			m.Store.StoreUser(user)
 			err = m.Store.StoreUserActiveEvents(user.MattermostUserID, remoteHashes)
 			if err != nil {
@@ -444,7 +457,7 @@ func (m *mscalendar) setStatusFromCalendarView(user *store.User, status *model.S
 			}
 			return "User was already marked as busy. No status change.", isStatusChanged, nil
 		}
-		err = m.setStatusOrAskUser(user, status, events, false)
+		err = m.setStatusOrAskUser(user, status, events, false, busyStatus)
 		if err != nil {
 			return "", isStatusChanged, errors.Wrapf(err, "error in setting user status for user %s", user.MattermostUserID)
 		}
@@ -458,6 +471,9 @@ func (m *mscalendar) setStatusFromCalendarView(user *store.User, status *model.S
 
 	newEventExists := false
 	for _, r := range remoteHashes {
+		if r == currentMarker {
+			continue
+		}
 		found := false
 		for _, loc := range user.ActiveEvents {
 			if loc == r {
@@ -471,13 +487,24 @@ func (m *mscalendar) setStatusFromCalendarView(user *store.User, status *model.S
 		}
 	}
 
-	if !newEventExists {
+	currentEventChanged := !slices.Contains(user.ActiveEvents, currentMarker)
+	// Only a status set by the plugin is switched to the status of the new current event:
+	// a status the user set manually during the busy period is left alone.
+	switchBusyStatus := currentEventChanged && user.IsPluginBusyStatus(currentStatus) && currentStatus != busyStatus
+
+	if !newEventExists && !switchBusyStatus {
+		if currentEventChanged {
+			// Remember the new current event, so that a later manual status change is not mistaken for its start.
+			if err := m.Store.StoreUserActiveEvents(user.MattermostUserID, remoteHashes); err != nil {
+				return "", isStatusChanged, errors.Wrapf(err, "error in storing active events for user %s", user.MattermostUserID)
+			}
+		}
 		return fmt.Sprintf("No change in active events. Total number of events: %d", len(events)), isStatusChanged, nil
 	}
 
 	message := "User is already busy. No status change."
 	if currentStatus != busyStatus {
-		err := m.setStatusOrAskUser(user, status, events, false)
+		err := m.setStatusOrAskUser(user, status, events, false, busyStatus)
 		if err != nil {
 			return "", isStatusChanged, errors.Wrapf(err, "error in setting user status for user %s", user.MattermostUserID)
 		}
@@ -498,24 +525,32 @@ func (m *mscalendar) setStatusFromCalendarView(user *store.User, status *model.S
 // - currentStatus: currentStatus, to decide whether to store this status when the user is free. This gets assigned to user.LastStatus at the beginning of the meeting.
 // - events: the list of events that are triggering this status change
 // - isFree: whether the user is free or busy, to decide to which status to change
-func (m *mscalendar) setStatusOrAskUser(user *store.User, currentStatus *model.Status, events []*remote.Event, isFree bool) error {
+// - busyStatus: the status to set when the user is busy
+func (m *mscalendar) setStatusOrAskUser(user *store.User, currentStatus *model.Status, events []*remote.Event, isFree bool, busyStatus string) error {
 	toSet := model.StatusOnline
 	if isFree && user.LastStatus != "" {
 		toSet = user.LastStatus
 		user.LastStatus = ""
 	}
 
+	// Switching between two busy events (e.g. focus time followed by a meeting with another status rule)
+	// must keep the status the user had before the first one.
+	busyTransition := !isFree && len(user.ActiveEvents) > 0 && user.IsPluginBusyStatus(currentStatus.Status)
+
 	if !isFree {
-		toSet = model.StatusDnd
-		if user.Settings.UpdateStatusFromOptions == store.AwayStatusOption {
-			toSet = model.StatusAway
-		}
+		toSet = busyStatus
 		if !user.Settings.GetConfirmation {
-			user.LastStatus = ""
-			if currentStatus.Manual {
-				user.LastStatus = currentStatus.Status
+			if !busyTransition {
+				user.LastStatus = ""
+				if currentStatus.Manual {
+					user.LastStatus = currentStatus.Status
+				}
 			}
+			user.BusyStatus = toSet
 		}
+	} else {
+		// The busy period is over whether or not the user confirms going back to the previous status.
+		user.BusyStatus = ""
 	}
 
 	err := m.Store.StoreUser(user)
@@ -532,7 +567,7 @@ func (m *mscalendar) setStatusOrAskUser(user *store.User, currentStatus *model.S
 	}
 
 	url := fmt.Sprintf("%s%s%s", m.Config.PluginURLPath, config.PathPostAction, config.PathConfirmStatusChange)
-	_, err = m.Poster.DMWithAttachments(user.MattermostUserID, views.RenderStatusChangeNotificationView(events, toSet, url))
+	_, err = m.Poster.DMWithAttachments(user.MattermostUserID, views.RenderStatusChangeNotificationView(currentEvent(events), toSet, url, !isFree, busyTransition))
 	if err != nil {
 		return err
 	}
@@ -646,27 +681,138 @@ func (m *mscalendar) notifyUpcomingEvents(mattermostUserID string, events []*rem
 	}
 }
 
-func filterBusyAndAttendeeEvents(events []*remote.Event) []*remote.Event {
+const currentEventMarker = "current:"
+
+func eventHash(e *remote.Event) string {
+	return fmt.Sprintf("%s %s", e.ICalUID, e.Start.Time().UTC().Format(time.RFC3339))
+}
+
+// statusRuleOf returns the status rule of the event, or nil.
+// Rules only apply to the user's own events (without guests or organized by the user),
+// so that an invitation from someone else (e.g. "Отпуск Пети") does not change the status of every guest.
+func statusRuleOf(rules []config.StatusRule, e *remote.Event) *config.StatusRule {
+	if len(rules) == 0 || e == nil {
+		return nil
+	}
+	if len(e.Attendees) > 0 && !e.IsOrganizer {
+		return nil
+	}
+	return config.FindStatusRule(rules, e.NormalizedEventType(), e.Subject)
+}
+
+// filterBusyAndAttendeeEvents keeps the events that should affect the user's status:
+//   - busy events with attendees (meetings);
+//   - the user's own events matched by a status rule, even without attendees and even if shown as free,
+//     since all-day events (e.g. out-of-office or vacation) are shown as free by default.
+func filterBusyAndAttendeeEvents(events []*remote.Event, rules []config.StatusRule) []*remote.Event {
 	result := []*remote.Event{}
 	for _, e := range events {
-		// Not setting custom status for events without attendees since those are unlikely to be meetings.
-		if e.ShowAs == "busy" && !e.IsCancelled && len(e.Attendees) >= 1 {
+		if e.IsCancelled {
+			continue
+		}
+
+		// Not setting status for events without attendees since those are unlikely to be meetings.
+		if statusRuleOf(rules, e) != nil || (e.ShowAs == "busy" && len(e.Attendees) >= 1) {
 			result = append(result, e)
 		}
 	}
 	return result
 }
 
+// filterStatusChangingEvents drops the events whose status rule says to leave the colored status unchanged.
+func filterStatusChangingEvents(events []*remote.Event, rules []config.StatusRule) []*remote.Event {
+	result := []*remote.Event{}
+	for _, e := range events {
+		if rule := statusRuleOf(rules, e); rule != nil && !rule.ChangesStatus() {
+			continue
+		}
+		result = append(result, e)
+	}
+	return result
+}
+
+// currentEvent returns the event that defines the status now: the latest one that has already started
+// (e.g. a meeting during an all-day out-of-office event), or the first upcoming one.
+// The events must be sorted by start time.
+func currentEvent(events []*remote.Event) *remote.Event {
+	if len(events) == 0 {
+		return nil
+	}
+	now := time.Now()
+	current := events[0]
+	for _, e := range events[1:] {
+		if e.Start.Time().After(now) {
+			break
+		}
+		current = e
+	}
+	return current
+}
+
+func (m *mscalendar) statusRules() []config.StatusRule {
+	if m.Config == nil {
+		return nil
+	}
+	return m.Config.ParsedStatusRules
+}
+
+// busyStatusForEvent returns the colored status to set for an event with the given rule:
+// the status of the rule, or the one chosen in the user's settings.
+func busyStatusForEvent(user *store.User, rule *config.StatusRule) string {
+	if rule != nil && rule.ChangesStatus() {
+		return rule.Status
+	}
+	return user.DefaultBusyStatus()
+}
+
+// isCustomStatusActive reports whether the custom status is set and not expired.
+func isCustomStatusActive(cs *model.CustomStatus) bool {
+	if cs == nil {
+		return false
+	}
+	return cs.ExpiresAt.IsZero() || cs.ExpiresAt.After(time.Now())
+}
+
+// customStatusForEvent returns the custom status emoji and text for the event,
+// using its status rule if any, and the event title otherwise.
+func customStatusForEvent(event *remote.Event, rule *config.StatusRule) (emoji, text string) {
+	title := strings.TrimSpace(event.Subject)
+	emoji, text = defaultCustomStatusEmoji, title
+
+	if rule != nil {
+		text = strings.TrimSpace(rule.CustomStatusText(title))
+		if rule.Emoji != "" {
+			emoji = rule.Emoji
+		}
+	}
+
+	if text == "" {
+		text = defaultCustomStatusText
+	}
+	return emoji, text
+}
+
 // getMergedEvents accepts a sorted array of events, and returns events after merging them, if overlapping or if the meeting duration is less than StatusSyncJobInterval.
-func getMergedEvents(events []*remote.Event) []*remote.Event {
-	if len(events) <= 1 {
+// Only events with the same status rule are merged, so that each keeps its own status.
+// The input events are not modified: the result holds copies.
+func getMergedEvents(events []*remote.Event, rules []config.StatusRule) []*remote.Event {
+	if len(events) == 0 {
 		return events
 	}
 
+	merged := make([]*remote.Event, len(events))
+	for i, e := range events {
+		c := *e
+		merged[i] = &c
+	}
+	events = merged
+
 	idx := 0
 	for i := 1; i < len(events); i++ {
-		if areEventsMergeable(events[idx], events[i]) {
-			events[idx].End = events[i].End
+		if areEventsMergeable(events[idx], events[i]) && statusRuleOf(rules, events[idx]) == statusRuleOf(rules, events[i]) {
+			if events[i].End.Time().After(events[idx].End.Time()) {
+				events[idx].End = events[i].End
+			}
 		} else {
 			idx++
 			events[idx] = events[i]

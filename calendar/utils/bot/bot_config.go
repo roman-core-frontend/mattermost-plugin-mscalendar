@@ -15,6 +15,11 @@ type Config struct {
 	AdminLogVerbose bool
 }
 
+// ForwardsErrorsToAdmins reports whether error logs are copied to the admins as bot messages.
+func (c Config) ForwardsErrorsToAdmins() bool {
+	return level(c.AdminLogLevel) >= level("error")
+}
+
 func (c Config) ToStorableConfig(configMap map[string]interface{}) map[string]interface{} {
 	if configMap == nil {
 		configMap = map[string]interface{}{}
