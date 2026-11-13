@@ -21,14 +21,23 @@ func TestParseStatusRules(t *testing.T) {
 		rules, err := ParseStatusRules(`[
 			{"event_type": "outOfOffice", "status": "DND"},
 			{"title_contains": "Отпуск", "status": "dnd", "emoji": ":palm_tree:", "text": "В отпуске"},
-			{"event_type": "focusTime", "emoji": "headphones", "text": "Фокус: {title}"}
+			{"event_type": "focusTime", "emoji": "headphones", "text": "Фокус: {title}"},
+			{"title_contains": "Обед", "status": " None ", "emoji": "hamburger"}
 		]`)
 		require.NoError(t, err)
-		require.Len(t, rules, 3)
+		require.Len(t, rules, 4)
 		assert.Equal(t, StatusRuleStatusDnd, rules[0].Status)
+		assert.True(t, rules[0].ChangesStatus())
+		assert.Equal(t, StatusRuleStatusDnd, rules[0].StatusOverride())
 		assert.Equal(t, "palm_tree", rules[1].Emoji)
-		assert.Equal(t, StatusRuleStatusNoChange, rules[2].Status)
-		assert.False(t, rules[2].ChangesStatus())
+
+		assert.Equal(t, "", rules[2].Status, "an omitted status uses the user's settings")
+		assert.True(t, rules[2].ChangesStatus())
+		assert.Equal(t, "", rules[2].StatusOverride())
+
+		assert.Equal(t, StatusRuleStatusNoChange, rules[3].Status, "only an explicit none leaves the status unchanged")
+		assert.False(t, rules[3].ChangesStatus())
+		assert.Equal(t, "", rules[3].StatusOverride())
 	})
 
 	t.Run("malformed JSON yields no rules", func(t *testing.T) {

@@ -730,7 +730,8 @@ func filterBusyAndAttendeeEvents(events []*remote.Event, rules []config.StatusRu
 	return result
 }
 
-// filterStatusChangingEvents drops the events whose status rule says to leave the colored status unchanged.
+// filterStatusChangingEvents drops the events whose status rule says to leave the colored status unchanged
+// (status "none"). Events matched by a rule without a status are kept and use the user's settings.
 func filterStatusChangingEvents(events []*remote.Event, rules []config.StatusRule) []*remote.Event {
 	result := []*remote.Event{}
 	for _, e := range events {
@@ -783,8 +784,10 @@ func (m *mscalendar) statusRules() []config.StatusRule {
 // busyStatusForEvent returns the colored status to set for an event with the given rule:
 // the status of the rule, or the one chosen in the user's settings.
 func busyStatusForEvent(user *store.User, rule *config.StatusRule) string {
-	if rule != nil && rule.ChangesStatus() {
-		return rule.Status
+	if rule != nil {
+		if status := rule.StatusOverride(); status != "" {
+			return status
+		}
 	}
 	return user.DefaultBusyStatus()
 }
