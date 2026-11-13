@@ -360,10 +360,6 @@ func (s *pluginStore) StoreUserActiveEvents(mattermostUserID string, events []st
 		return err
 	}
 	u.ActiveEvents = events
-	if len(events) == 0 {
-		// The busy period is over, whether or not the plugin changed the status back.
-		u.BusyStatus = ""
-	}
 	return kvstore.StoreJSON(s.userKV, mattermostUserID, u)
 }
 

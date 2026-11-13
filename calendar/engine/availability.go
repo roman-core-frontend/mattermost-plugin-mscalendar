@@ -423,6 +423,13 @@ func (m *mscalendar) setStatusFromCalendarView(user *store.User, status *model.S
 				return "", isStatusChanged, errors.Wrapf(err, "error in setting user status for user %s", user.MattermostUserID)
 			}
 			isStatusChanged = true
+		} else if user.BusyStatus != "" {
+			// The user changed the status during the busy period, so it is not restored,
+			// but the busy period is over and the status the plugin set must be forgotten.
+			user.BusyStatus = ""
+			if err := m.Store.StoreUser(user); err != nil {
+				return "", isStatusChanged, errors.Wrapf(err, "error in storing user %s", user.MattermostUserID)
+			}
 		}
 
 		err := m.Store.StoreUserActiveEvents(user.MattermostUserID, []string{})
@@ -531,9 +538,14 @@ func (m *mscalendar) setStatusFromCalendarView(user *store.User, status *model.S
 // - busyStatus: the status to set when the user is busy
 func (m *mscalendar) setStatusOrAskUser(user *store.User, currentStatus *model.Status, current *remote.Event, isFree bool, busyStatus string) error {
 	toSet := model.StatusOnline
-	if isFree && user.LastStatus != "" {
-		toSet = user.LastStatus
-		user.LastStatus = ""
+	lastStatus, newBusyStatus := user.LastStatus, user.BusyStatus
+	if isFree {
+		if user.LastStatus != "" {
+			toSet = user.LastStatus
+		}
+		lastStatus = ""
+		// The busy period is over whether or not the user confirms going back to the previous status.
+		newBusyStatus = ""
 	}
 
 	// Switching between two busy events (e.g. focus time followed by a meeting with another status rule)
@@ -544,37 +556,33 @@ func (m *mscalendar) setStatusOrAskUser(user *store.User, currentStatus *model.S
 		toSet = busyStatus
 		if !user.Settings.GetConfirmation {
 			if !busyTransition {
-				user.LastStatus = ""
+				lastStatus = ""
 				if currentStatus.Manual {
-					user.LastStatus = currentStatus.Status
+					lastStatus = currentStatus.Status
 				}
 			}
-			user.BusyStatus = toSet
+			newBusyStatus = toSet
 		}
-	} else {
-		// The busy period is over whether or not the user confirms going back to the previous status.
-		user.BusyStatus = ""
-	}
-
-	err := m.Store.StoreUser(user)
-	if err != nil {
-		return err
 	}
 
 	if !user.Settings.GetConfirmation {
-		_, appErr := m.PluginAPI.UpdateMattermostUserStatus(user.MattermostUserID, toSet)
-		if appErr != nil {
-			return appErr
+		// The user is stored only once the status is changed: if the change fails, the stored statuses
+		// still match the real one, so the next sync retries instead of losing the status to restore.
+		if _, err := m.PluginAPI.UpdateMattermostUserStatus(user.MattermostUserID, toSet); err != nil {
+			return err
 		}
-		return nil
+		user.LastStatus, user.BusyStatus = lastStatus, newBusyStatus
+		return m.Store.StoreUser(user)
+	}
+
+	user.LastStatus, user.BusyStatus = lastStatus, newBusyStatus
+	if err := m.Store.StoreUser(user); err != nil {
+		return err
 	}
 
 	url := fmt.Sprintf("%s%s%s", m.Config.PluginURLPath, config.PathPostAction, config.PathConfirmStatusChange)
-	_, err = m.Poster.DMWithAttachments(user.MattermostUserID, views.RenderStatusChangeNotificationView(current, toSet, url, !isFree, busyTransition))
-	if err != nil {
-		return err
-	}
-	return nil
+	_, err := m.Poster.DMWithAttachments(user.MattermostUserID, views.RenderStatusChangeNotificationView(current, toSet, url, !isFree, busyTransition))
+	return err
 }
 
 func (m *mscalendar) GetCalendarEvents(user *User, start, end time.Time, excludeDeclined bool) (*remote.ViewCalendarResponse, error) {
