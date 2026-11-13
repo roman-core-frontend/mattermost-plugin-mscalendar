@@ -73,47 +73,47 @@ func TestEventRules(t *testing.T) {
 	rules := testStatusRules(t)
 
 	t.Run("own events match", func(t *testing.T) {
-		assert.Equal(t, "dnd", statusRuleOf(rules, testEvent("Не в офисе", "outOfOffice", "busy", 0)).Status)
-		assert.Equal(t, "palm_tree", statusRuleOf(rules, testEvent("ОТПУСК на море", "default", "free", 0)).Emoji)
+		assert.Equal(t, "dnd", statusRuleOf(rules, testEvent("Не в офисе", remote.EventTypeOutOfOffice, "busy", 0)).Status)
+		assert.Equal(t, "palm_tree", statusRuleOf(rules, testEvent("ОТПУСК на море", remote.EventTypeDefault, "free", 0)).Emoji)
 
-		organized := testEvent("Отпуск команды", "default", "busy", 3)
+		organized := testEvent("Отпуск команды", remote.EventTypeDefault, "busy", 3)
 		organized.IsOrganizer = true
 		assert.NotNil(t, statusRuleOf(rules, organized))
 	})
 
 	t.Run("invitations from others do not match", func(t *testing.T) {
-		assert.Nil(t, statusRuleOf(rules, testEvent("Отпуск Пети", "default", "free", 5)))
+		assert.Nil(t, statusRuleOf(rules, testEvent("Отпуск Пети", remote.EventTypeDefault, "free", 5)))
 	})
 
 	t.Run("Microsoft Graph out-of-office events match outOfOffice rules", func(t *testing.T) {
-		assert.NotNil(t, statusRuleOf(rules, testEvent("Away", "", "oof", 0)))
+		assert.NotNil(t, statusRuleOf(rules, testEvent("Away", "", remote.ShowAsOutOfOffice, 0)))
 	})
 
 	t.Run("no rules", func(t *testing.T) {
-		assert.Nil(t, statusRuleOf(nil, testEvent("Отпуск", "default", "free", 0)))
+		assert.Nil(t, statusRuleOf(nil, testEvent("Отпуск", remote.EventTypeDefault, "free", 0)))
 	})
 }
 
 func TestFilterBusyAndAttendeeEvents(t *testing.T) {
 	rules := testStatusRules(t)
 
-	cancelled := testEvent("Cancelled meeting", "default", "busy", 2)
+	cancelled := testEvent("Cancelled meeting", remote.EventTypeDefault, "busy", 2)
 	cancelled.IsCancelled = true
-	cancelledOOO := testEvent("Cancelled OOO", "outOfOffice", "busy", 0)
+	cancelledOOO := testEvent("Cancelled OOO", remote.EventTypeOutOfOffice, "busy", 0)
 	cancelledOOO.IsCancelled = true
-	allDayVacation := testEvent("Отпуск", "default", "free", 0)
+	allDayVacation := testEvent("Отпуск", remote.EventTypeDefault, "free", 0)
 	allDayVacation.IsAllDay = true
 
 	events := []*remote.Event{
-		testEvent("Meeting", "default", "busy", 2),
-		testEvent("Solo busy block", "default", "busy", 0),
-		testEvent("Free meeting", "default", "free", 2),
+		testEvent("Meeting", remote.EventTypeDefault, "busy", 2),
+		testEvent("Solo busy block", remote.EventTypeDefault, "busy", 0),
+		testEvent("Free meeting", remote.EventTypeDefault, "free", 2),
 		cancelled,
 		cancelledOOO,
-		testEvent("Не в офисе", "outOfOffice", "busy", 0),
+		testEvent("Не в офисе", remote.EventTypeOutOfOffice, "busy", 0),
 		allDayVacation,
-		testEvent("Deep work", "focusTime", "busy", 0),
-		testEvent("Отпуск Пети", "default", "free", 5),
+		testEvent("Deep work", remote.EventTypeFocusTime, "busy", 0),
+		testEvent("Отпуск Пети", remote.EventTypeDefault, "free", 5),
 	}
 
 	t.Run("with rules", func(t *testing.T) {
@@ -130,9 +130,9 @@ func TestFilterBusyAndAttendeeEvents(t *testing.T) {
 func TestFilterStatusChangingEvents(t *testing.T) {
 	rules := testStatusRules(t)
 	events := []*remote.Event{
-		testEvent("Meeting", "default", "busy", 2),
-		testEvent("Обед", "default", "busy", 0),
-		testEvent("Отпуск", "default", "free", 0),
+		testEvent("Meeting", remote.EventTypeDefault, "busy", 2),
+		testEvent("Обед", remote.EventTypeDefault, "busy", 0),
+		testEvent("Отпуск", remote.EventTypeDefault, "free", 0),
 	}
 	assert.Equal(t, []string{"Meeting", "Отпуск"}, eventSubjects(filterStatusChangingEvents(events, rules)))
 }
@@ -145,12 +145,12 @@ func TestCustomStatusForEvent(t *testing.T) {
 		expectedEmoji string
 		expectedText  string
 	}{
-		"meeting uses event title":           {testEvent("Daily standup", "default", "busy", 3), "calendar", "Daily standup"},
-		"empty title falls back":             {testEvent("  ", "default", "busy", 3), "calendar", "In a meeting"},
-		"title rule replaces text and emoji": {testEvent("Отпуск на море", "default", "free", 0), "palm_tree", "В отпуске"},
-		"type rule with {title}":             {testEvent("Code review", "focusTime", "busy", 0), "headphones", "Фокус: Code review"},
-		"type rule without text uses title":  {testEvent("Не в офисе", "outOfOffice", "busy", 0), "calendar", "Не в офисе"},
-		"invitation is a regular meeting":    {testEvent("Отпуск Пети", "default", "busy", 5), "calendar", "Отпуск Пети"},
+		"meeting uses event title":           {testEvent("Daily standup", remote.EventTypeDefault, "busy", 3), "calendar", "Daily standup"},
+		"empty title falls back":             {testEvent("  ", remote.EventTypeDefault, "busy", 3), "calendar", "In a meeting"},
+		"title rule replaces text and emoji": {testEvent("Отпуск на море", remote.EventTypeDefault, "free", 0), "palm_tree", "В отпуске"},
+		"type rule with {title}":             {testEvent("Code review", remote.EventTypeFocusTime, "busy", 0), "headphones", "Фокус: Code review"},
+		"type rule without text uses title":  {testEvent("Не в офисе", remote.EventTypeOutOfOffice, "busy", 0), "calendar", "Не в офисе"},
+		"invitation is a regular meeting":    {testEvent("Отпуск Пети", remote.EventTypeDefault, "busy", 5), "calendar", "Отпуск Пети"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			emoji, text := customStatusForEvent(tc.event, statusRuleOf(rules, tc.event))
@@ -165,9 +165,9 @@ func TestBusyStatusForEvent(t *testing.T) {
 	dndUser := &store.User{Settings: store.Settings{UpdateStatusFromOptions: store.DNDStatusOption}}
 	awayUser := &store.User{Settings: store.Settings{UpdateStatusFromOptions: store.AwayStatusOption}}
 
-	assert.Equal(t, model.StatusAway, busyStatusForEvent(awayUser, statusRuleOf(rules, testEvent("Meeting", "default", "busy", 2))))
-	assert.Equal(t, model.StatusDnd, busyStatusForEvent(awayUser, statusRuleOf(rules, testEvent("Не в офисе", "outOfOffice", "busy", 0))))
-	assert.Equal(t, model.StatusAway, busyStatusForEvent(dndUser, statusRuleOf(rules, testEvent("Deep work", "focusTime", "busy", 0))))
+	assert.Equal(t, model.StatusAway, busyStatusForEvent(awayUser, statusRuleOf(rules, testEvent("Meeting", remote.EventTypeDefault, "busy", 2))))
+	assert.Equal(t, model.StatusDnd, busyStatusForEvent(awayUser, statusRuleOf(rules, testEvent("Не в офисе", remote.EventTypeOutOfOffice, "busy", 0))))
+	assert.Equal(t, model.StatusAway, busyStatusForEvent(dndUser, statusRuleOf(rules, testEvent("Deep work", remote.EventTypeFocusTime, "busy", 0))))
 	assert.Equal(t, model.StatusDnd, busyStatusForEvent(dndUser, nil))
 }
 
@@ -193,8 +193,8 @@ func TestGetMergedEventsWithRules(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Minute)
 
 	t.Run("a shorter event inside a longer one does not cut it, and originals are not modified", func(t *testing.T) {
-		long := eventAt("Long", "default", now.Add(-time.Hour), now.Add(3*time.Hour))
-		short := eventAt("Short", "default", now, now.Add(time.Hour))
+		long := eventAt("Long", remote.EventTypeDefault, now.Add(-time.Hour), now.Add(3*time.Hour))
+		short := eventAt("Short", remote.EventTypeDefault, now, now.Add(time.Hour))
 		merged := getMergedEvents([]*remote.Event{long, short}, rules)
 		require.Len(t, merged, 1)
 		assert.Equal(t, now.Add(3*time.Hour), merged[0].End.Time())
@@ -203,8 +203,8 @@ func TestGetMergedEventsWithRules(t *testing.T) {
 	})
 
 	t.Run("adjacent events with different rules are not merged", func(t *testing.T) {
-		focus := eventAt("Deep work", "focusTime", now.Add(-time.Hour), now)
-		meeting := eventAt("Meeting", "default", now, now.Add(time.Hour))
+		focus := eventAt("Deep work", remote.EventTypeFocusTime, now.Add(-time.Hour), now)
+		meeting := eventAt("Meeting", remote.EventTypeDefault, now, now.Add(time.Hour))
 		merged := getMergedEvents([]*remote.Event{focus, meeting}, rules)
 		assert.Equal(t, []string{"Deep work", "Meeting"}, eventSubjects(merged))
 	})
@@ -213,14 +213,14 @@ func TestGetMergedEventsWithRules(t *testing.T) {
 func TestCurrentEvent(t *testing.T) {
 	rules := testStatusRules(t)
 	now := time.Now().UTC()
-	ooo := eventAt("Не в офисе", "outOfOffice", now.Add(-10*time.Hour), now.Add(10*time.Hour))
-	vacation := eventAt("Отпуск", "default", now.Add(-10*time.Hour), now.Add(10*time.Hour))
-	focus := eventAt("Deep work", "focusTime", now.Add(-2*time.Hour), now.Add(time.Hour))
-	meeting := eventAt("Time to focus", "default", now.Add(-5*time.Minute), now.Add(time.Hour))
+	ooo := eventAt("Не в офисе", remote.EventTypeOutOfOffice, now.Add(-10*time.Hour), now.Add(10*time.Hour))
+	vacation := eventAt("Отпуск", remote.EventTypeDefault, now.Add(-10*time.Hour), now.Add(10*time.Hour))
+	focus := eventAt("Deep work", remote.EventTypeFocusTime, now.Add(-2*time.Hour), now.Add(time.Hour))
+	meeting := eventAt("Time to focus", remote.EventTypeDefault, now.Add(-5*time.Minute), now.Add(time.Hour))
 	meeting.Attendees = []*remote.Attendee{{}}
 	meeting.IsOrganizer = true
-	other := eventAt("Standup", "default", now.Add(-3*time.Minute), now.Add(time.Hour))
-	upcoming := eventAt("Upcoming", "default", now.Add(5*time.Minute), now.Add(time.Hour))
+	other := eventAt("Standup", remote.EventTypeDefault, now.Add(-3*time.Minute), now.Add(time.Hour))
+	upcoming := eventAt("Upcoming", remote.EventTypeDefault, now.Add(5*time.Minute), now.Add(time.Hour))
 
 	assert.Nil(t, currentEvent(nil, rules))
 	assert.Equal(t, "Не в офисе", currentEvent([]*remote.Event{ooo, meeting, upcoming}, rules).Subject,
@@ -246,7 +246,7 @@ func TestSetStatusOrAskUserKeepsLastStatus(t *testing.T) {
 		}}
 		return m, s, papi, poster
 	}
-	events := []*remote.Event{testEvent("Meeting", "default", "busy", 2)}
+	events := []*remote.Event{testEvent("Meeting", remote.EventTypeDefault, "busy", 2)}
 
 	t.Run("start of the first busy event stores the manual status", func(t *testing.T) {
 		m, s, papi, _ := newEngine(t)
@@ -356,8 +356,8 @@ func TestSetStatusFromCalendarViewNextEventStarts(t *testing.T) {
 	}}
 
 	now := time.Now().UTC().Truncate(time.Minute)
-	focus := eventAt("Deep work", "focusTime", now.Add(-55*time.Minute), now.Add(5*time.Minute))
-	meeting := eventAt("Meeting", "default", now.Add(5*time.Minute), now.Add(time.Hour))
+	focus := eventAt("Deep work", remote.EventTypeFocusTime, now.Add(-55*time.Minute), now.Add(5*time.Minute))
+	meeting := eventAt("Meeting", remote.EventTypeDefault, now.Add(5*time.Minute), now.Add(time.Hour))
 	meeting.Attendees = []*remote.Attendee{{}}
 
 	user := &store.User{
@@ -396,7 +396,7 @@ func TestSetStatusFromCalendarViewNextEventStarts(t *testing.T) {
 
 func TestRenderStatusChangeNotificationViewShowsCurrentEvent(t *testing.T) {
 	now := time.Now().UTC()
-	ooo := eventAt("Не в офисе", "outOfOffice", now.Add(-time.Hour), now.Add(10*time.Hour))
+	ooo := eventAt("Не в офисе", remote.EventTypeOutOfOffice, now.Add(-time.Hour), now.Add(10*time.Hour))
 
 	attachment := views.RenderStatusChangeNotificationView(ooo, model.StatusAway, "url", true, false)
 	assert.Contains(t, attachment.Text, "Не в офисе")
@@ -416,8 +416,8 @@ func TestSetStatusFromCalendarViewManualStatusDuringFocus(t *testing.T) {
 	}}
 
 	now := time.Now().UTC().Truncate(time.Minute)
-	focus := eventAt("Deep work", "focusTime", now.Add(-time.Hour), now.Add(-time.Minute))
-	meeting := eventAt("Meeting", "default", now.Add(-time.Minute), now.Add(time.Hour))
+	focus := eventAt("Deep work", remote.EventTypeFocusTime, now.Add(-time.Hour), now.Add(-time.Minute))
+	meeting := eventAt("Meeting", remote.EventTypeDefault, now.Add(-time.Minute), now.Add(time.Hour))
 	meeting.Attendees = []*remote.Attendee{{}}
 
 	// Focus time set "away", then the user set "online" manually; the meeting was fetched before it started.
@@ -437,7 +437,7 @@ func TestSetStatusFromCalendarViewManualStatusDuringFocus(t *testing.T) {
 
 func TestStatusRuleWithoutNormalize(t *testing.T) {
 	rules := []config.StatusRule{{TitleContains: "Обед", Status: "away"}}
-	assert.Nil(t, config.FindStatusRule(rules, "default", "Meeting"))
-	assert.NotNil(t, config.FindStatusRule(rules, "default", "обед с командой"))
-	assert.Nil(t, config.FindStatusRule([]config.StatusRule{{Status: "away"}}, "default", "Meeting"), "a rule without a condition matches nothing")
+	assert.Nil(t, config.FindStatusRule(rules, remote.EventTypeDefault, "Meeting"))
+	assert.NotNil(t, config.FindStatusRule(rules, remote.EventTypeDefault, "обед с командой"))
+	assert.Nil(t, config.FindStatusRule([]config.StatusRule{{Status: "away"}}, remote.EventTypeDefault, "Meeting"), "a rule without a condition matches nothing")
 }

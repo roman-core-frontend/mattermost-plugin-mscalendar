@@ -731,6 +731,22 @@ func TestReminders(t *testing.T) {
 			numReminders:   1,
 			shouldLogError: false,
 		},
+		"Out-of-office and focus time events in the range for the reminder. No reminder.": {
+			remoteEvents: []*remote.Event{
+				{ICalUID: "ooo_id", EventType: remote.EventTypeOutOfOffice, Start: remote.NewDateTime(time.Now().Add(7*time.Minute).UTC(), "UTC"), End: remote.NewDateTime(time.Now().Add(45*time.Minute).UTC(), "UTC")},
+				{ICalUID: "focus_id", EventType: remote.EventTypeFocusTime, Start: remote.NewDateTime(time.Now().Add(7*time.Minute).UTC(), "UTC"), End: remote.NewDateTime(time.Now().Add(45*time.Minute).UTC(), "UTC")},
+				{ICalUID: "event_id", EventType: remote.EventTypeDefault, Start: remote.NewDateTime(time.Now().Add(7*time.Minute).UTC(), "UTC"), End: remote.NewDateTime(time.Now().Add(45*time.Minute).UTC(), "UTC")},
+			},
+			numReminders:   1,
+			shouldLogError: false,
+		},
+		"Microsoft out-of-office event (showAs oof, no event type) in the range for the reminder. No reminder.": {
+			remoteEvents: []*remote.Event{
+				{ICalUID: "ms_ooo_id", ShowAs: remote.ShowAsOutOfOffice, Start: remote.NewDateTime(time.Now().Add(7*time.Minute).UTC(), "UTC"), End: remote.NewDateTime(time.Now().Add(45*time.Minute).UTC(), "UTC")},
+			},
+			numReminders:   0,
+			shouldLogError: false,
+		},
 		"Two remote event, and are in the range for the reminder. Two reminders should occur.": {
 			remoteEvents: []*remote.Event{
 				{ICalUID: "event_id", Start: remote.NewDateTime(time.Now().Add(7*time.Minute).UTC(), "UTC"), End: remote.NewDateTime(time.Now().Add(45*time.Minute).UTC(), "UTC")},

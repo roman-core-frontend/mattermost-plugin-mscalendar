@@ -619,7 +619,7 @@ func (m *mscalendar) GetCalendarViews(users []*store.User) ([]*remote.ViewCalend
 func (m *mscalendar) notifyUpcomingEvents(mattermostUserID string, events []*remote.Event) {
 	var timezone string
 	for _, event := range events {
-		if event.IsCancelled {
+		if event.IsCancelled || !event.IsRegular() {
 			continue
 		}
 		upcomingTime := time.Now().Add(upcomingEventNotificationTime)
