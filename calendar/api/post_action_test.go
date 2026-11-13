@@ -598,7 +598,7 @@ func TestPostActionConfirmStatusChange(t *testing.T) {
 				mockPluginAPI.EXPECT().GetMattermostUserStatus(MockUserID).Return(&model.Status{Manual: true, Status: "online"}, nil).Times(1)
 				mockStore.EXPECT().LoadUser(MockUserID).Return(&store.User{}, nil).Times(1)
 				mockStore.EXPECT().StoreUser(gomock.Any()).Return(errors.New("store error")).Times(1)
-				// The status is not changed: without the stored user the plugin could not restore it later.
+				mockPluginAPI.EXPECT().UpdateMattermostUserStatus("mockUserID", "away")
 
 				req.Header.Set(MMUserIDHeader, MockUserID)
 				requestBody := model.PostActionIntegrationRequest{
@@ -616,6 +616,132 @@ func TestPostActionConfirmStatusChange(t *testing.T) {
 				err := json.NewDecoder(rec.Body).Decode(&response)
 				assert.NoError(t, err)
 				assert.Contains(t, response.EphemeralText, "Cannot update user")
+			},
+		},
+		{
+			name: "Error changing status: the user is not stored",
+			setup: func(req *http.Request) {
+				mockPluginAPI.EXPECT().GetMattermostUserStatus(MockUserID).Return(&model.Status{Manual: true, Status: "online"}, nil).Times(1)
+				mockStore.EXPECT().LoadUser(MockUserID).Return(&store.User{ActiveEvents: []string{"meeting"}}, nil).Times(1)
+				mockPluginAPI.EXPECT().UpdateMattermostUserStatus(MockUserID, "dnd").Return(nil, errors.New("update error")).Times(1)
+				mockLogger.EXPECT().Warnf("cannot update user status, err=%s", gomock.Any())
+				// No StoreUser call is expected.
+
+				req.Header.Set(MMUserIDHeader, MockUserID)
+				requestBody := model.PostActionIntegrationRequest{
+					Context: map[string]interface{}{
+						"value":     true,
+						"change_to": "dnd",
+						"is_busy":   true,
+						"hasEvent":  false,
+					},
+				}
+				bodyBytes, _ := json.Marshal(requestBody)
+				req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			},
+			assertions: func(rec *httptest.ResponseRecorder) {
+				var response model.PostActionIntegrationResponse
+				err := json.NewDecoder(rec.Body).Decode(&response)
+				assert.NoError(t, err)
+				assert.Contains(t, response.EphemeralText, "Cannot update status.")
+				assert.Nil(t, response.Update, "no success is claimed")
+			},
+		},
+		{
+			name: "Busy confirmation during the busy period remembers the busy status",
+			setup: func(req *http.Request) {
+				mockPluginAPI.EXPECT().GetMattermostUserStatus(MockUserID).Return(&model.Status{Manual: true, Status: "online"}, nil).Times(1)
+				mockStore.EXPECT().LoadUser(MockUserID).Return(&store.User{ActiveEvents: []string{"meeting"}}, nil).Times(1)
+				gomock.InOrder(
+					mockPluginAPI.EXPECT().UpdateMattermostUserStatus(MockUserID, "dnd").Return(nil, nil).Times(1),
+					mockStore.EXPECT().StoreUser(gomock.Any()).DoAndReturn(func(u *store.User) error {
+						assert.Equal(t, "online", u.LastStatus)
+						assert.Equal(t, "dnd", u.BusyStatus)
+						return nil
+					}).Times(1),
+				)
+
+				req.Header.Set(MMUserIDHeader, MockUserID)
+				requestBody := model.PostActionIntegrationRequest{
+					Context: map[string]interface{}{
+						"value":     true,
+						"change_to": "dnd",
+						"is_busy":   true,
+						"hasEvent":  false,
+					},
+				}
+				bodyBytes, _ := json.Marshal(requestBody)
+				req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			},
+			assertions: func(rec *httptest.ResponseRecorder) {
+				var response model.PostActionIntegrationResponse
+				err := json.NewDecoder(rec.Body).Decode(&response)
+				assert.NoError(t, err)
+				assert.Empty(t, response.EphemeralText)
+				assert.NotNil(t, response.Update)
+			},
+		},
+		{
+			name: "Late busy confirmation after the busy period changes the status without remembering it",
+			setup: func(req *http.Request) {
+				mockPluginAPI.EXPECT().GetMattermostUserStatus(MockUserID).Return(&model.Status{Manual: true, Status: "online"}, nil).Times(1)
+				mockStore.EXPECT().LoadUser(MockUserID).Return(&store.User{BusyStatus: "away"}, nil).Times(1)
+				mockPluginAPI.EXPECT().UpdateMattermostUserStatus(MockUserID, "dnd").Return(nil, nil).Times(1)
+				mockStore.EXPECT().StoreUser(gomock.Any()).DoAndReturn(func(u *store.User) error {
+					assert.Equal(t, "", u.BusyStatus)
+					return nil
+				}).Times(1)
+
+				req.Header.Set(MMUserIDHeader, MockUserID)
+				requestBody := model.PostActionIntegrationRequest{
+					Context: map[string]interface{}{
+						"value":     true,
+						"change_to": "dnd",
+						"is_busy":   true,
+						"hasEvent":  false,
+					},
+				}
+				bodyBytes, _ := json.Marshal(requestBody)
+				req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			},
+			assertions: func(rec *httptest.ResponseRecorder) {
+				var response model.PostActionIntegrationResponse
+				err := json.NewDecoder(rec.Body).Decode(&response)
+				assert.NoError(t, err)
+				assert.Empty(t, response.EphemeralText)
+				assert.NotNil(t, response.Update)
+			},
+		},
+		{
+			name: "Changing back after the busy period does not record the busy status as the previous status",
+			setup: func(req *http.Request) {
+				mockPluginAPI.EXPECT().GetMattermostUserStatus(MockUserID).Return(&model.Status{Manual: true, Status: "dnd"}, nil).Times(1)
+				mockStore.EXPECT().LoadUser(MockUserID).Return(&store.User{BusyStatus: "dnd"}, nil).Times(1)
+				mockPluginAPI.EXPECT().UpdateMattermostUserStatus(MockUserID, "online").Return(nil, nil).Times(1)
+				mockStore.EXPECT().StoreUser(gomock.Any()).DoAndReturn(func(u *store.User) error {
+					assert.Equal(t, "", u.LastStatus)
+					assert.Equal(t, "", u.BusyStatus)
+					return nil
+				}).Times(1)
+
+				req.Header.Set(MMUserIDHeader, MockUserID)
+				requestBody := model.PostActionIntegrationRequest{
+					Context: map[string]interface{}{
+						"value":     true,
+						"change_to": "online",
+						"is_busy":   false,
+						"hasEvent":  false,
+					},
+				}
+				bodyBytes, _ := json.Marshal(requestBody)
+				req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			},
+			assertions: func(rec *httptest.ResponseRecorder) {
+				var response model.PostActionIntegrationResponse
+				err := json.NewDecoder(rec.Body).Decode(&response)
+				assert.NoError(t, err)
+				assert.Empty(t, response.EphemeralText)
+				assert.NotNil(t, response.Update)
 			},
 		},
 		{
