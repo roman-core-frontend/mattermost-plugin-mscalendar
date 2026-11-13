@@ -365,12 +365,32 @@ func TestSetStatusOrAskUserKeepsLastStatus(t *testing.T) {
 		assert.Equal(t, model.StatusAway, user.BusyStatus, "changed only when the user confirms")
 	})
 
+	t.Run("a failed confirmation at the end of the busy period leaves the stored user unchanged", func(t *testing.T) {
+		m, _, _, poster := newEngine(t)
+		user := &store.User{
+			MattermostUserID: "user_mm_id",
+			Settings:         store.Settings{GetConfirmation: true},
+			LastStatus:       model.StatusOnline,
+			BusyStatus:       model.StatusAway,
+			ActiveEvents:     []string{"focus"},
+		}
+		before := *user
+
+		// No StoreUser call is expected.
+		poster.EXPECT().DMWithAttachments("user_mm_id", gomock.Any()).Return("", errors.New("DM failed"))
+
+		require.Error(t, m.setStatusOrAskUser(user, &model.Status{Status: model.StatusAway, Manual: true}, nil, true, model.StatusDnd))
+		assert.Equal(t, before, *user)
+	})
+
 	t.Run("end of the busy period with confirmation clears the busy status", func(t *testing.T) {
 		m, s, _, poster := newEngine(t)
 		user := &store.User{MattermostUserID: "user_mm_id", Settings: store.Settings{GetConfirmation: true}, BusyStatus: model.StatusAway, ActiveEvents: []string{"focus"}}
 
-		s.EXPECT().StoreUser(user).Return(nil)
-		poster.EXPECT().DMWithAttachments("user_mm_id", gomock.Any()).Return("", nil)
+		gomock.InOrder(
+			poster.EXPECT().DMWithAttachments("user_mm_id", gomock.Any()).Return("", nil),
+			s.EXPECT().StoreUser(user).Return(nil),
+		)
 
 		require.NoError(t, m.setStatusOrAskUser(user, &model.Status{Status: model.StatusAway, Manual: true}, nil, true, model.StatusDnd))
 		assert.Equal(t, "", user.BusyStatus)
@@ -495,22 +515,27 @@ func TestSetStatusFromCalendarViewEndOfBusyPeriod(t *testing.T) {
 		}
 	}
 
-	t.Run("a status changed manually is kept and the busy status is cleared", func(t *testing.T) {
+	t.Run("a status changed manually is kept and the busy period is cleared in one write", func(t *testing.T) {
 		m, s, _ := newEngine(t)
 		user := newUser()
 
-		gomock.InOrder(
-			s.EXPECT().StoreUser(gomock.Any()).DoAndReturn(func(u *store.User) error {
-				assert.Equal(t, "", u.BusyStatus)
-				return nil
-			}),
-			s.EXPECT().StoreUserActiveEvents("user_mm_id", []string{}).Return(nil),
-		)
+		// Neither StoreUser (with the user loaded at the start of the sync) nor StoreUserActiveEvents is expected.
+		s.EXPECT().ClearUserBusyPeriod("user_mm_id").Return(nil)
 
 		_, changed, err := m.setStatusFromCalendarView(user, &model.Status{Status: model.StatusOnline, Manual: true}, nil, nil)
 		require.NoError(t, err)
 		assert.False(t, changed)
-		assert.Equal(t, "", user.BusyStatus)
+	})
+
+	t.Run("a failure to clear the busy period is returned", func(t *testing.T) {
+		m, s, _ := newEngine(t)
+		user := newUser()
+
+		s.EXPECT().ClearUserBusyPeriod("user_mm_id").Return(errors.New("store failed"))
+
+		_, changed, err := m.setStatusFromCalendarView(user, &model.Status{Status: model.StatusOnline, Manual: true}, nil, nil)
+		require.Error(t, err)
+		assert.False(t, changed)
 	})
 
 	t.Run("the status set by the plugin is restored", func(t *testing.T) {
@@ -572,4 +597,22 @@ func TestStatusRuleWithoutStatus(t *testing.T) {
 	emoji, text := customStatusForEvent(organized, rule)
 	assert.Equal(t, "eyes", emoji)
 	assert.Equal(t, "Code review", text)
+}
+
+func TestSetStatusFromCalendarViewAlreadyBusyStoreError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	s := mock_store.NewMockStore(ctrl)
+	m := &mscalendar{Env: Env{
+		Config:       &config.Config{},
+		Dependencies: &Dependencies{Store: s},
+	}}
+	user := &store.User{MattermostUserID: "user_mm_id", Settings: store.Settings{UpdateStatusFromOptions: store.DNDStatusOption}}
+	meeting := testEvent("Meeting", remote.EventTypeDefault, "busy", 2)
+
+	// The active events are not stored when the user could not be stored.
+	s.EXPECT().StoreUser(user).Return(errors.New("store failed"))
+
+	_, changed, err := m.setStatusFromCalendarView(user, &model.Status{Status: model.StatusDnd, Manual: true}, []*remote.Event{meeting}, nil)
+	require.Error(t, err)
+	assert.False(t, changed)
 }

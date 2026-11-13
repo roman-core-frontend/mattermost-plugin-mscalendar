@@ -41,6 +41,7 @@ type UserStore interface {
 	StoreUserInIndex(user *User) error
 	DeleteUserFromIndex(mattermostUserID string) error
 	StoreUserActiveEvents(mattermostUserID string, events []string) error
+	ClearUserBusyPeriod(mattermostUserID string) error
 	StoreUserLinkedEvent(mattermostUserID, eventID, channelID string) error
 	RefreshAndStoreToken(token *oauth2.Token, oconf *oauth2.Config, mattermostUserID string) (*oauth2.Token, error)
 	CheckUserConnected(mattermostUserID string) bool
@@ -374,6 +375,20 @@ func (s *pluginStore) StoreUserActiveEvents(mattermostUserID string, events []st
 		return err
 	}
 	u.ActiveEvents = events
+	return kvstore.StoreJSON(s.userKV, mattermostUserID, u)
+}
+
+// ClearUserBusyPeriod ends the user's busy period in a single write: it clears the active events, the busy status
+// and the last status. The user is reloaded first, so that changes made meanwhile (e.g. a refreshed token or a
+// confirmation handled during the sync) are not overwritten.
+func (s *pluginStore) ClearUserBusyPeriod(mattermostUserID string) error {
+	u, err := s.LoadUser(mattermostUserID)
+	if err != nil {
+		return err
+	}
+	u.ActiveEvents = []string{}
+	u.BusyStatus = ""
+	u.LastStatus = ""
 	return kvstore.StoreJSON(s.userKV, mattermostUserID, u)
 }
 
