@@ -4,8 +4,12 @@
 package remote
 
 const (
+	// EventTypeDefault is the type of regular events.
+	EventTypeDefault = "default"
 	// EventTypeOutOfOffice is the normalized type of out-of-office events.
 	EventTypeOutOfOffice = "outOfOffice"
+	// EventTypeFocusTime is the type of focus time events.
+	EventTypeFocusTime = "focusTime"
 	// ShowAsOutOfOffice is how Microsoft Graph marks out-of-office events.
 	ShowAsOutOfOffice = "oof"
 )
@@ -52,6 +56,13 @@ func (e *Event) NormalizedEventType() string {
 		return EventTypeOutOfOffice
 	}
 	return ""
+}
+
+// IsRegular reports whether the event is a regular one, as opposed to special types such as out-of-office
+// (including Microsoft Graph showAs "oof") or focus time, which are not meetings to be reminded of.
+func (e *Event) IsRegular() bool {
+	t := e.NormalizedEventType()
+	return t == "" || t == EventTypeDefault
 }
 
 type ItemBody struct {
