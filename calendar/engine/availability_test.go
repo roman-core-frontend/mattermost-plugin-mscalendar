@@ -42,6 +42,7 @@ func TestSyncStatusAll(t *testing.T) {
 		currentStatusManual bool
 		shouldLogError      bool
 		getConfirmation     bool
+		clearsBusyPeriod    bool
 	}{
 		"Most common case, no events local or remote. No status change.": {
 			remoteEvents:        []*remote.Event{},
@@ -69,7 +70,8 @@ func TestSyncStatusAll(t *testing.T) {
 			currentStatus:       "dnd",
 			currentStatusManual: true,
 			newStatus:           "online",
-			eventsToStore:       []string{},
+			eventsToStore:       nil,
+			clearsBusyPeriod:    true,
 			shouldLogError:      false,
 			getConfirmation:     false,
 		},
@@ -165,7 +167,9 @@ func TestSyncStatusAll(t *testing.T) {
 			if tc.newStatus == "" {
 				papi.EXPECT().UpdateMattermostUserStatus("user_mm_id", gomock.Any()).Times(0)
 			} else {
-				if tc.currentStatusManual && !tc.getConfirmation ||
+				if tc.clearsBusyPeriod {
+					s.EXPECT().ClearUserBusyPeriod("user_mm_id").Return(nil).Times(1)
+				} else if tc.currentStatusManual && !tc.getConfirmation ||
 					tc.currentStatusManual && tc.currentStatus == "dnd" {
 					if tc.newStatus == "dnd" {
 						mockUser.LastStatus = tc.currentStatus
