@@ -423,18 +423,18 @@ func (m *mscalendar) setStatusFromCalendarView(user *store.User, status *model.S
 				return "", isStatusChanged, errors.Wrapf(err, "error in setting user status for user %s", user.MattermostUserID)
 			}
 			isStatusChanged = true
-		} else if user.BusyStatus != "" {
-			// The user changed the status during the busy period, so it is not restored,
-			// but the busy period is over and the status the plugin set must be forgotten.
-			user.BusyStatus = ""
-			if err := m.Store.StoreUser(user); err != nil {
-				return "", isStatusChanged, errors.Wrapf(err, "error in storing user %s", user.MattermostUserID)
+
+			err = m.Store.StoreUserActiveEvents(user.MattermostUserID, []string{})
+			if err != nil {
+				return "", isStatusChanged, errors.Wrapf(err, "error in storing active events for user %s", user.MattermostUserID)
 			}
+			return message, isStatusChanged, nil
 		}
 
-		err := m.Store.StoreUserActiveEvents(user.MattermostUserID, []string{})
-		if err != nil {
-			return "", isStatusChanged, errors.Wrapf(err, "error in storing active events for user %s", user.MattermostUserID)
+		// The user changed the status during the busy period, so it is not restored: the busy period is over,
+		// and neither the status the plugin set nor the status from before the period applies any more.
+		if err := m.Store.ClearUserBusyPeriod(user.MattermostUserID); err != nil {
+			return "", isStatusChanged, errors.Wrapf(err, "error in clearing the busy period for user %s", user.MattermostUserID)
 		}
 		return message, isStatusChanged, nil
 	}
@@ -460,7 +460,10 @@ func (m *mscalendar) setStatusFromCalendarView(user *store.User, status *model.S
 				user.LastStatus = currentStatus
 			}
 			user.BusyStatus = busyStatus
-			m.Store.StoreUser(user)
+			err = m.Store.StoreUser(user)
+			if err != nil {
+				return "", isStatusChanged, errors.Wrapf(err, "error in storing user %s", user.MattermostUserID)
+			}
 			err = m.Store.StoreUserActiveEvents(user.MattermostUserID, remoteHashes)
 			if err != nil {
 				return "", isStatusChanged, errors.Wrapf(err, "error in storing active events for user %s", user.MattermostUserID)
@@ -575,14 +578,14 @@ func (m *mscalendar) setStatusOrAskUser(user *store.User, currentStatus *model.S
 		return m.Store.StoreUser(user)
 	}
 
-	user.LastStatus, user.BusyStatus = lastStatus, newBusyStatus
-	if err := m.Store.StoreUser(user); err != nil {
+	// Likewise, the user is stored only once the confirmation is sent: if sending fails, the statuses to restore
+	// are kept for the next sync.
+	url := fmt.Sprintf("%s%s%s", m.Config.PluginURLPath, config.PathPostAction, config.PathConfirmStatusChange)
+	if _, err := m.Poster.DMWithAttachments(user.MattermostUserID, views.RenderStatusChangeNotificationView(current, toSet, url, !isFree, busyTransition)); err != nil {
 		return err
 	}
-
-	url := fmt.Sprintf("%s%s%s", m.Config.PluginURLPath, config.PathPostAction, config.PathConfirmStatusChange)
-	_, err := m.Poster.DMWithAttachments(user.MattermostUserID, views.RenderStatusChangeNotificationView(current, toSet, url, !isFree, busyTransition))
-	return err
+	user.LastStatus, user.BusyStatus = lastStatus, newBusyStatus
+	return m.Store.StoreUser(user)
 }
 
 func (m *mscalendar) GetCalendarEvents(user *User, start, end time.Time, excludeDeclined bool) (*remote.ViewCalendarResponse, error) {

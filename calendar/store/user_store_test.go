@@ -4,6 +4,7 @@
 package store
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/mock"
@@ -683,6 +684,35 @@ func TestStoreUserActiveEvents(t *testing.T) {
 			mockAPI.AssertExpectations(t)
 		})
 	}
+}
+
+func TestClearUserBusyPeriod(t *testing.T) {
+	const userKey = "user_c3b5020d58a049787bc969768465b890"
+	storedUser := `{"mm_id":"mockUserID","LastStatus":"online","busyStatus":"away","events":["meeting"],"IsCustomStatusSet":true}`
+
+	t.Run("clears the busy period of the reloaded user in one write", func(t *testing.T) {
+		mockAPI, store, _, _, _ := GetMockSetup(t)
+		mockAPI.On("KVGet", userKey).Return([]byte(storedUser), nil).Times(1)
+		var written User
+		mockAPI.On("KVSet", userKey, mock.MatchedBy(func(data []byte) bool {
+			return json.Unmarshal(data, &written) == nil
+		})).Return(nil).Times(1)
+
+		require.NoError(t, store.ClearUserBusyPeriod(MockMMUserID))
+		mockAPI.AssertExpectations(t)
+		require.Equal(t, []string{}, written.ActiveEvents)
+		require.Equal(t, "", written.BusyStatus)
+		require.Equal(t, "", written.LastStatus)
+		require.True(t, written.IsCustomStatusSet, "other fields of the reloaded user are kept")
+	})
+
+	t.Run("error loading user", func(t *testing.T) {
+		mockAPI, store, _, _, _ := GetMockSetup(t)
+		mockAPI.On("KVGet", userKey).Return(nil, &model.AppError{Message: "User not found"}).Times(1)
+
+		require.EqualError(t, store.ClearUserBusyPeriod(MockMMUserID), "failed plugin KVGet: User not found")
+		mockAPI.AssertExpectations(t)
+	})
 }
 
 func TestStoreUserLinkedEvent(t *testing.T) {
