@@ -20,6 +20,11 @@ type StoredConfig struct {
 	EnableExperimentalUI bool
 
 	EncryptionKey string
+
+	// StatusRules is the raw JSON array of status rules from the System Console.
+	StatusRules string
+	// ParsedStatusRules holds the validated StatusRules; filled in on configuration change.
+	ParsedStatusRules []StatusRule `json:"-"`
 }
 
 func (c *StoredConfig) IsOAuthConfigured() bool {

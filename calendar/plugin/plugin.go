@@ -4,6 +4,8 @@
 package plugin
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -155,6 +157,11 @@ func (p *Plugin) OnConfigurationChange() (err error) {
 		return errors.WithMessage(err, "failed to load plugin configuration")
 	}
 
+	// Invalid rules must not disable the whole plugin: they are skipped, the valid ones are applied,
+	// and the error is reported once the bot is configured.
+	statusRules, rulesErr := config.ParseStatusRules(stored.StatusRules)
+	stored.ParsedStatusRules = statusRules
+
 	mattermostSiteURL := p.API.GetConfig().ServiceSettings.SiteURL
 	if mattermostSiteURL == nil {
 		return errors.New("plugin requires Mattermost Site URL to be set")
@@ -246,6 +253,10 @@ func (p *Plugin) OnConfigurationChange() (err error) {
 			e.jobManager.AddJob(jobs.NewRenewJob())
 		}
 	})
+
+	if rulesErr != nil {
+		p.reportStatusRulesError(stored, rulesErr)
+	}
 
 	return nil
 }
@@ -463,3 +474,35 @@ func (p *Plugin) initEnv(e *Env, pluginURL string) error {
 
 	return nil
 }
+
+// reportStatusRulesError logs invalid status rules and, when admin logs are enabled, sends them to the admins.
+func (p *Plugin) reportStatusRulesError(stored config.StoredConfig, rulesErr error) {
+	message := fmt.Sprintf("Invalid status rules in the plugin configuration (System Console > Plugins > Status rules): %v", rulesErr)
+	if stored.Config.ForwardsErrorsToAdmins() && p.shouldReportStatusRulesError(stored.StatusRules) {
+		// Errorf writes to the server log and copies the message to the admins.
+		p.getEnv().bot.Errorf("%s", message)
+		return
+	}
+	p.API.LogError(message)
+}
+
+// shouldReportStatusRulesError reports whether the admins should be notified about invalid status rules.
+// The configuration change runs on every save and on every cluster node, so the notification is sent
+// once per distinct rules text: only the node that atomically creates the marker key reports it.
+func (p *Plugin) shouldReportStatusRulesError(rawRules string) bool {
+	sum := sha256.Sum256([]byte(rawRules))
+	key := "status_rules_error_" + hex.EncodeToString(sum[:8])
+	created, appErr := p.API.KVSetWithOptions(key, []byte{1}, model.PluginKVSetOptions{
+		Atomic:          true,
+		OldValue:        nil,
+		ExpireInSeconds: statusRulesErrorReportTTL,
+	})
+	if appErr != nil {
+		p.API.LogWarn("Failed to store the status rules error marker", "error", appErr.Error())
+		return false
+	}
+	return created
+}
+
+// statusRulesErrorReportTTL is how long the admins are not notified again about the same invalid rules.
+const statusRulesErrorReportTTL = 7 * 24 * 60 * 60

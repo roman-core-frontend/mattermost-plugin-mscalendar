@@ -109,6 +109,14 @@
                 "help_text": "When true, users are always prompted for consent during OAuth2 authorization. Set to false if your Azure/Entra configuration requires admin consent for registered applications and non-admin users are encountering authorization errors.",
                 "placeholder": "",
                 "default": true
+            },
+            {
+                "key": "StatusRules",
+                "display_name": "Status rules:",
+                "type": "longtext",
+                "help_text": "JSON array of rules applied while a calendar event is in progress. The first matching rule wins.\nCondition: 'event_type' (outOfOffice: Outlook events shown as Out of Office) or 'title_contains' (case-insensitive text in the event title).\nAction: 'status' (dnd, away, or none to leave the status unchanged), 'emoji' (emoji name, e.g. palm_tree), 'text' (custom status text, {title} is the event title; empty means the event title).",
+                "placeholder": "",
+                "default": ""
             }
         ]
     }

@@ -598,7 +598,7 @@ func TestPostActionConfirmStatusChange(t *testing.T) {
 				mockPluginAPI.EXPECT().GetMattermostUserStatus(MockUserID).Return(&model.Status{Manual: true, Status: "online"}, nil).Times(1)
 				mockStore.EXPECT().LoadUser(MockUserID).Return(&store.User{}, nil).Times(1)
 				mockStore.EXPECT().StoreUser(gomock.Any()).Return(errors.New("store error")).Times(1)
-				mockPluginAPI.EXPECT().UpdateMattermostUserStatus("mockUserID", "away")
+				// The status is not changed: without the stored user the plugin could not restore it later.
 
 				req.Header.Set(MMUserIDHeader, MockUserID)
 				requestBody := model.PostActionIntegrationRequest{

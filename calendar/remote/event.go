@@ -4,6 +4,13 @@
 package remote
 
 const (
+	// EventTypeOutOfOffice is the normalized type of out-of-office events.
+	EventTypeOutOfOffice = "outOfOffice"
+	// ShowAsOutOfOffice is how Microsoft Graph marks out-of-office events.
+	ShowAsOutOfOffice = "oof"
+)
+
+const (
 	EventResponseStatusNotAnswered = "not_answered"
 	EventResponseStatusAccepted    = "accepted"
 	EventResponseStatusTentative   = "tentative"
@@ -24,6 +31,7 @@ type Event struct {
 	Subject                    string               `json:"subject,omitempty"`
 	BodyPreview                string               `json:"bodyPreview,omitempty"`
 	ShowAs                     string               `json:"showAs,omitempty"`
+	EventType                  string               `json:"eventType,omitempty"`
 	Weblink                    string               `json:"weblink,omitempty"`
 	ID                         string               `json:"id,omitempty"`
 	Attendees                  []*Attendee          `json:"attendees,omitempty"`
@@ -32,6 +40,18 @@ type Event struct {
 	IsCancelled                bool                 `json:"isCancelled,omitempty"`
 	IsAllDay                   bool                 `json:"isAllDay,omitempty"`
 	ResponseRequested          bool                 `json:"responseRequested,omitempty"`
+}
+
+// NormalizedEventType returns the event type, mapping provider-specific markers to common types:
+// Google Calendar sets eventType, while Microsoft Graph marks out-of-office events with showAs "oof".
+func (e *Event) NormalizedEventType() string {
+	if e.EventType != "" {
+		return e.EventType
+	}
+	if e.ShowAs == ShowAsOutOfOffice {
+		return EventTypeOutOfOffice
+	}
+	return ""
 }
 
 type ItemBody struct {

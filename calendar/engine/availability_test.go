@@ -59,7 +59,7 @@ func TestSyncStatusAll(t *testing.T) {
 			currentStatus:       "online",
 			currentStatusManual: true,
 			newStatus:           "dnd",
-			eventsToStore:       []string{eventHash},
+			eventsToStore:       []string{eventHash, currentEventMarker + eventHash},
 			shouldLogError:      false,
 			getConfirmation:     false,
 		},
@@ -75,7 +75,7 @@ func TestSyncStatusAll(t *testing.T) {
 		},
 		"Locally stored event is still happening. No status change.": {
 			remoteEvents:        []*remote.Event{busyEvent},
-			activeEvents:        []string{eventHash},
+			activeEvents:        []string{eventHash, currentEventMarker + eventHash},
 			currentStatus:       "dnd",
 			currentStatusManual: true,
 			newStatus:           "",
@@ -83,9 +83,18 @@ func TestSyncStatusAll(t *testing.T) {
 			shouldLogError:      false,
 			getConfirmation:     false,
 		},
-		"User has manually set themselves to online during event. Locally stored event is still happening, but we will ignore it. No status change.": {
+		"Event stored before the current event marker existed is still happening. Marker is stored, no status change.": {
 			remoteEvents:        []*remote.Event{busyEvent},
 			activeEvents:        []string{eventHash},
+			currentStatus:       "online",
+			currentStatusManual: true,
+			newStatus:           "",
+			eventsToStore:       []string{eventHash, currentEventMarker + eventHash},
+			shouldLogError:      false,
+		},
+		"User has manually set themselves to online during event. Locally stored event is still happening, but we will ignore it. No status change.": {
+			remoteEvents:        []*remote.Event{busyEvent},
+			activeEvents:        []string{eventHash, currentEventMarker + eventHash},
 			currentStatus:       "online",
 			currentStatusManual: true,
 			newStatus:           "",
@@ -218,7 +227,7 @@ func TestSyncStatusUserConfig(t *testing.T) {
 				papi.EXPECT().GetMattermostUserStatusesByIds([]string{"user_mm_id"}).Return([]*model.Status{{Status: "online", Manual: true, UserId: "user_mm_id"}}, nil)
 
 				s.EXPECT().StoreUser(gomock.Any()).Return(nil).Times(1)
-				s.EXPECT().StoreUserActiveEvents("user_mm_id", []string{"event_id " + moment.Format(time.RFC3339)})
+				s.EXPECT().StoreUserActiveEvents("user_mm_id", []string{"event_id " + moment.Format(time.RFC3339), "current:event_id " + moment.Format(time.RFC3339)})
 				poster.EXPECT().DMWithAttachments("user_mm_id", gomock.Any()).Times(1)
 				papi.EXPECT().UpdateMattermostUserStatus("user_mm_id", gomock.Any()).Times(0)
 			},
@@ -598,7 +607,7 @@ func TestSyncCustomStatusAndUserStatusConfig(t *testing.T) {
 				s.EXPECT().StoreUserCustomStatusUpdates("user_mm_id", true).Return(nil)
 				r.EXPECT().MakeSuperuserClient(context.Background()).Return(client, nil)
 
-				s.EXPECT().StoreUserActiveEvents("user_mm_id", []string{"event_id " + moment.Format(time.RFC3339)})
+				s.EXPECT().StoreUserActiveEvents("user_mm_id", []string{"event_id " + moment.Format(time.RFC3339), "current:event_id " + moment.Format(time.RFC3339)})
 				s.EXPECT().StoreUser(gomock.Any()).Return(nil).Times(1)
 				poster.EXPECT().DMWithAttachments("user_mm_id", gomock.Any()).Times(1)
 				papi.EXPECT().UpdateMattermostUserStatus("user_mm_id", gomock.Any()).Times(0)
@@ -633,7 +642,7 @@ func TestSyncCustomStatusAndUserStatusConfig(t *testing.T) {
 				s.EXPECT().StoreUserCustomStatusUpdates("user_mm_id", true).Return(nil)
 				r.EXPECT().MakeSuperuserClient(context.Background()).Return(client, nil)
 
-				s.EXPECT().StoreUserActiveEvents("user_mm_id", []string{"event_id " + moment.Format(time.RFC3339)})
+				s.EXPECT().StoreUserActiveEvents("user_mm_id", []string{"event_id " + moment.Format(time.RFC3339), "current:event_id " + moment.Format(time.RFC3339)})
 				s.EXPECT().StoreUser(gomock.Any()).Return(nil).Times(1)
 				poster.EXPECT().DMWithAttachments("user_mm_id", gomock.Any()).Times(1)
 				papi.EXPECT().UpdateMattermostUserStatus("user_mm_id", gomock.Any()).Times(0)
@@ -1178,7 +1187,7 @@ func TestGetMergedEvents(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			assert := assert.New(t)
-			res := getMergedEvents(tc.events)
+			res := getMergedEvents(tc.events, nil)
 			assert.Equal(tc.expectedResult, res)
 		})
 	}
