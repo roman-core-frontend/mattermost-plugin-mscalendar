@@ -8,7 +8,7 @@ const (
 	EventTypeDefault = "default"
 	// EventTypeOutOfOffice is the normalized type of out-of-office events.
 	EventTypeOutOfOffice = "outOfOffice"
-	// EventTypeFocusTime is the type of focus time events.
+	// EventTypeFocusTime is the type of focus time events. Only Google Calendar has it: Microsoft Graph has no focus time type.
 	EventTypeFocusTime = "focusTime"
 	// ShowAsOutOfOffice is how Microsoft Graph marks out-of-office events.
 	ShowAsOutOfOffice = "oof"
@@ -47,7 +47,8 @@ type Event struct {
 }
 
 // NormalizedEventType returns the event type, mapping provider-specific markers to common types:
-// Google Calendar sets eventType, while Microsoft Graph marks out-of-office events with showAs "oof".
+// Google Calendar sets eventType (e.g. outOfOffice or focusTime), while Microsoft Graph has no event types
+// and only marks out-of-office events, with showAs "oof". Focus time events exist only in Google Calendar.
 func (e *Event) NormalizedEventType() string {
 	if e.EventType != "" {
 		return e.EventType
@@ -58,8 +59,8 @@ func (e *Event) NormalizedEventType() string {
 	return ""
 }
 
-// IsRegular reports whether the event is a regular one, as opposed to special types such as out-of-office
-// (including Microsoft Graph showAs "oof") or focus time, which are not meetings to be reminded of.
+// IsRegular reports whether the event is a regular one, as opposed to special types that are not meetings
+// to be reminded of: out-of-office (Google eventType or Microsoft Graph showAs "oof") and Google-only focus time.
 func (e *Event) IsRegular() bool {
 	t := e.NormalizedEventType()
 	return t == "" || t == EventTypeDefault
