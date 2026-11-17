@@ -367,8 +367,8 @@ func (p *Plugin) loadTemplates(bundlePath string) error {
 }
 
 // reEncryptUserData re-encrypts all user data when the encryption key changes.
-// Users whose records can't be decrypted with the old key are force-deleted
-// and notified to reconnect.
+// Users whose records can be read with neither the old nor the new key are
+// force-deleted and notified to reconnect.
 func (p *Plugin) reEncryptUserData(e *Env, previousEncryptionKey string) {
 	userIndex, err := e.Dependencies.Store.LoadUserIndex()
 	if err != nil {
@@ -387,19 +387,7 @@ func (p *Plugin) reEncryptUserData(e *Env, previousEncryptionKey string) {
 	for _, u := range userIndex {
 		oldUser, loadErr := oldKeyStore.LoadUser(u.MattermostUserID)
 		if loadErr != nil {
-			p.API.LogWarn("Could not decrypt user with previous encryption key, force-deleting",
-				"mm_user_id", u.MattermostUserID,
-				"error", loadErr.Error(),
-			)
-			if delErr := e.Dependencies.Store.ForceDeleteUser(u.MattermostUserID); delErr != nil {
-				// Nothing was reset, so the user is not told to reconnect.
-				p.API.LogWarn("Failed to force-delete user during encryption key rotation",
-					"mm_user_id", u.MattermostUserID,
-					"error", delErr.Error(),
-				)
-				continue
-			}
-			p.notifyUserReconnect(e, u.MattermostUserID, "the plugin encryption key was changed")
+			p.handleUserNotLoadedWithPreviousKey(e, u.MattermostUserID, loadErr)
 			continue
 		}
 
@@ -413,6 +401,42 @@ func (p *Plugin) reEncryptUserData(e *Env, previousEncryptionKey string) {
 			}
 		}
 	}
+}
+
+// handleUserNotLoadedWithPreviousKey handles a user that could not be loaded with the previous encryption key.
+// Every node of a cluster runs the rotation, and the user may also have been stored again meanwhile (e.g. by a
+// token refresh or a reconnect), so a user that loads with the new key is already re-encrypted and is left alone.
+// The user is force-deleted and told to reconnect only when it is unreadable with both keys. Other errors (e.g. a
+// failed KV read, or a user that no longer exists) are only logged, so that a valid connection is never deleted.
+func (p *Plugin) handleUserNotLoadedWithPreviousKey(e *Env, mattermostUserID string, oldKeyErr error) {
+	_, newKeyErr := e.Dependencies.Store.LoadUser(mattermostUserID)
+	if newKeyErr == nil {
+		p.API.LogDebug("User is already encrypted with the new encryption key, skipping", "mm_user_id", mattermostUserID)
+		return
+	}
+
+	if !store.IsUnreadableUser(oldKeyErr) || !store.IsUnreadableUser(newKeyErr) {
+		p.API.LogWarn("Could not load user during encryption key rotation, skipping",
+			"mm_user_id", mattermostUserID,
+			"error", oldKeyErr.Error(),
+			"new_key_error", newKeyErr.Error(),
+		)
+		return
+	}
+
+	p.API.LogWarn("Could not read user with the previous or the new encryption key, force-deleting",
+		"mm_user_id", mattermostUserID,
+		"error", oldKeyErr.Error(),
+	)
+	if delErr := e.Dependencies.Store.ForceDeleteUser(mattermostUserID); delErr != nil {
+		// Nothing was reset, so the user is not told to reconnect.
+		p.API.LogWarn("Failed to force-delete user during encryption key rotation",
+			"mm_user_id", mattermostUserID,
+			"error", delErr.Error(),
+		)
+		return
+	}
+	p.notifyUserReconnect(e, mattermostUserID, "the plugin encryption key was changed")
 }
 
 // cleanupUserRelatedData removes subscription and linked event data for a user

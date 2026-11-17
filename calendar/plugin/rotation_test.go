@@ -6,6 +6,7 @@ package plugin
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -61,42 +62,93 @@ func encryptedWithOldKey(t *testing.T) []byte {
 	return c.data
 }
 
-func TestReEncryptUserDataNotifiesOnlyAfterForceDelete(t *testing.T) {
+func notEncryptedWithOldKey(*testing.T) []byte { return []byte("not encrypted with the old key") }
+
+// warned reports whether LogWarn was called with the message.
+func warned(api *plugintest.API, msg string) bool {
+	for _, call := range api.Calls {
+		if call.Method == "LogWarn" && len(call.Arguments) > 0 && call.Arguments.String(0) == msg {
+			return true
+		}
+	}
+	return false
+}
+
+func TestReEncryptUserData(t *testing.T) {
+	unreadable := fmt.Errorf("%w: cipher: message authentication failed", kvstore.ErrDecrypt)
+	kvErr := errors.New("failed plugin KVGet")
+
 	tcs := []struct {
-		name           string
-		storedUser     func(t *testing.T) []byte
-		storeUserFails bool
-		forceDeleteErr error
-		expectedWarn   string
-		expectDM       bool
+		name string
+		// The stored user as read with the previous key, or the KVGet error.
+		oldKeyData  func(t *testing.T) []byte
+		oldKeyKVErr *model.AppError
+		// The result of loading the user with the new key, when the previous key fails.
+		loadsWithNewKey bool
+		newKeyErr       error
+		storeUserFails  bool
+		forceDelete     bool
+		forceDeleteErr  error
+		expectedWarn    string
+		expectDM        bool
 	}{
 		{
-			name:         "user unreadable with the old key is force-deleted and notified",
-			storedUser:   func(*testing.T) []byte { return []byte("not encrypted with the old key") },
-			expectedWarn: "Could not decrypt user with previous encryption key, force-deleting",
+			// In a cluster, another node already re-encrypted the user, or a token refresh or a reconnect
+			// stored it with the new key.
+			name:            "user already encrypted with the new key is left alone",
+			oldKeyData:      notEncryptedWithOldKey,
+			loadsWithNewKey: true,
+		},
+		{
+			name:         "user unreadable with both keys is force-deleted and notified",
+			oldKeyData:   notEncryptedWithOldKey,
+			newKeyErr:    unreadable,
+			forceDelete:  true,
+			expectedWarn: "Could not read user with the previous or the new encryption key, force-deleting",
 			expectDM:     true,
 		},
 		{
-			name:           "user unreadable with the old key is not notified when the force-delete fails",
-			storedUser:     func(*testing.T) []byte { return []byte("not encrypted with the old key") },
+			name:           "user unreadable with both keys is not notified when the force-delete fails",
+			oldKeyData:     notEncryptedWithOldKey,
+			newKeyErr:      unreadable,
+			forceDelete:    true,
 			forceDeleteErr: errors.New("error deleting the user"),
 			expectedWarn:   "Failed to force-delete user during encryption key rotation",
-			expectDM:       false,
+		},
+		{
+			name:         "transient KV error leaves the user alone",
+			oldKeyData:   func(*testing.T) []byte { return nil },
+			oldKeyKVErr:  &model.AppError{Message: "KVGet failed"},
+			newKeyErr:    kvErr,
+			expectedWarn: "Could not load user during encryption key rotation, skipping",
+		},
+		{
+			name:         "user unreadable with the old key but not loaded with the new key for another reason is left alone",
+			oldKeyData:   notEncryptedWithOldKey,
+			newKeyErr:    kvErr,
+			expectedWarn: "Could not load user during encryption key rotation, skipping",
+		},
+		{
+			name:         "user removed meanwhile is skipped",
+			oldKeyData:   func(*testing.T) []byte { return nil },
+			newKeyErr:    store.ErrNotFound,
+			expectedWarn: "Could not load user during encryption key rotation, skipping",
 		},
 		{
 			name:           "user that cannot be re-encrypted is force-deleted and notified",
-			storedUser:     encryptedWithOldKey,
+			oldKeyData:     encryptedWithOldKey,
 			storeUserFails: true,
+			forceDelete:    true,
 			expectedWarn:   "Failed to re-encrypt user data with new key, force-deleting",
 			expectDM:       true,
 		},
 		{
 			name:           "user that cannot be re-encrypted is not notified when the force-delete fails",
-			storedUser:     encryptedWithOldKey,
+			oldKeyData:     encryptedWithOldKey,
 			storeUserFails: true,
+			forceDelete:    true,
 			forceDeleteErr: errors.New("error deleting the user"),
 			expectedWarn:   "Failed to force-delete user during encryption key rotation",
-			expectDM:       false,
 		},
 	}
 
@@ -109,13 +161,24 @@ func TestReEncryptUserDataNotifiesOnlyAfterForceDelete(t *testing.T) {
 			}, nil)
 			if tc.storeUserFails {
 				mockStore.EXPECT().StoreUser(gomock.Any()).Return(errors.New("error storing the user"))
+			} else {
+				// The user is not re-encrypted: it cannot be loaded with the previous key.
+				if tc.loadsWithNewKey {
+					mockStore.EXPECT().LoadUser(rotationMMUserID).Return(&store.User{MattermostUserID: rotationMMUserID}, nil)
+				} else {
+					mockStore.EXPECT().LoadUser(rotationMMUserID).Return(nil, tc.newKeyErr)
+				}
 			}
-			mockStore.EXPECT().ForceDeleteUser(rotationMMUserID).Return(tc.forceDeleteErr)
+			if tc.forceDelete {
+				mockStore.EXPECT().ForceDeleteUser(rotationMMUserID).Return(tc.forceDeleteErr)
+			}
 
 			mockAPI := &plugintest.API{}
 			mockAPI.On("LogInfo", mock.Anything, mock.Anything, mock.Anything).Return()
+			mockAPI.On("LogDebug", mock.Anything, mock.Anything, mock.Anything).Return()
 			mockAPI.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
-			mockAPI.On("KVGet", rotationUserKey).Return(tc.storedUser(t), nil)
+			mockAPI.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+			mockAPI.On("KVGet", rotationUserKey).Return(tc.oldKeyData(t), tc.oldKeyKVErr)
 
 			p := &Plugin{envLock: &sync.RWMutex{}}
 			p.SetAPI(mockAPI)
@@ -127,7 +190,11 @@ func TestReEncryptUserDataNotifiesOnlyAfterForceDelete(t *testing.T) {
 
 			p.reEncryptUserData(e, rotationOldKey)
 
-			mockAPI.AssertCalled(t, "LogWarn", tc.expectedWarn, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+			if tc.expectedWarn != "" {
+				require.True(t, warned(mockAPI, tc.expectedWarn), "expected warning %q", tc.expectedWarn)
+			} else {
+				mockAPI.AssertNotCalled(t, "LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+			}
 			if tc.expectDM {
 				require.Equal(t, []string{rotationMMUserID}, fakeBot.dms)
 			} else {
