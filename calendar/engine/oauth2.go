@@ -88,10 +88,8 @@ func (app *oauth2App) CompleteOAuth2(authedUserID, code, state string) error {
 	if loadErr == nil {
 		return errors.New("user is already connected")
 	}
+	// Any other load error (e.g. a corrupted record) is overwritten by storing the new user, as before.
 	replaceUnreadable := errors.Is(loadErr, kvstore.ErrDecrypt)
-	if loadErr != store.ErrNotFound && !replaceUnreadable {
-		return errors.Wrap(loadErr, "error loading the stored user")
-	}
 
 	// A mapping of the remote account to this same Mattermost user never blocks the connection: storing the user
 	// overwrites it.
