@@ -16,7 +16,6 @@ import (
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/config"
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/engine"
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/engine/mock_engine"
-	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/remote"
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/store"
 )
 
@@ -33,43 +32,32 @@ func TestDisconnect(t *testing.T) {
 			command: "disconnect",
 			setup: func(m engine.Engine) {
 				mscal := m.(*mock_engine.MockEngine)
-				mscal.EXPECT().GetRemoteUser("user_id").Return(&remote.User{}, store.ErrNotFound).Times(1)
+				mscal.EXPECT().DisconnectUser("user_id").Return(store.ErrNotFound).Times(1)
 			},
 			expectedOutput: getNotConnectedText("http://localhost"),
 			expectedError:  "",
 		},
 		{
-			name:    "error fetching user",
+			name:    "stored user cannot be read, disconnect still runs",
 			command: "disconnect",
 			setup: func(m engine.Engine) {
 				mscal := m.(*mock_engine.MockEngine)
-				mscal.EXPECT().GetRemoteUser("user_id").Return(&remote.User{}, errors.New("some error")).Times(1)
+				mscal.EXPECT().GetRemoteUser(gomock.Any()).Times(0)
+				mscal.EXPECT().DisconnectUser("user_id").Return(nil).Times(1)
+				mscal.EXPECT().ClearSettingsPosts("user_id").Return().Times(1)
 			},
-			expectedOutput: "",
-			expectedError:  fmt.Sprintf("Command /%s disconnect failed: some error", config.Provider.CommandTrigger),
+			expectedOutput: "Successfully disconnected your account",
+			expectedError:  "",
 		},
 		{
 			name:    "disconnect failed",
 			command: "disconnect",
 			setup: func(m engine.Engine) {
 				mscal := m.(*mock_engine.MockEngine)
-				mscal.EXPECT().GetRemoteUser("user_id").Return(&remote.User{}, nil).Times(1)
 				mscal.EXPECT().DisconnectUser("user_id").Return(errors.New("some error")).Times(1)
 			},
 			expectedOutput: "",
 			expectedError:  fmt.Sprintf("Command /%s disconnect failed: some error", config.Provider.CommandTrigger),
-		},
-		{
-			name:    "disconnect successful",
-			command: "disconnect",
-			setup: func(m engine.Engine) {
-				mscal := m.(*mock_engine.MockEngine)
-				mscal.EXPECT().GetRemoteUser("user_id").Return(&remote.User{}, nil).Times(1)
-				mscal.EXPECT().DisconnectUser("user_id").Return(nil).Times(1)
-				mscal.EXPECT().ClearSettingsPosts("user_id").Return().Times(1)
-			},
-			expectedOutput: "Successfully disconnected your account",
-			expectedError:  "",
 		},
 	}
 

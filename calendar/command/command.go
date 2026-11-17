@@ -124,7 +124,9 @@ func (c *Command) Handle() (string, bool, error) {
 	case "connect":
 		handler = c.connect
 	case "disconnect":
-		handler = c.requireConnectedUser(c.disconnect)
+		// Not wrapped in requireConnectedUser: that check reads the stored user, which cannot be decrypted after
+		// the encryption key was regenerated, and disconnecting is exactly how such a user recovers.
+		handler = c.disconnect
 	case "summary":
 		handler = c.requireConnectedUser(c.dailySummary)
 	case "viewcal":

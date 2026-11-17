@@ -39,6 +39,7 @@ type UserStore interface {
 	ModifyUserIndex(modify func(userIndex UserIndex) (UserIndex, error)) error
 	StoreUserInIndex(user *User) error
 	DeleteUserFromIndex(mattermostUserID string) error
+	ForceDeleteUser(mattermostUserID, remoteUserID string) error
 	StoreUserActiveEvents(mattermostUserID string, events []string) error
 	ClearUserBusyPeriod(mattermostUserID string) error
 	StoreUserLinkedEvent(mattermostUserID, eventID, channelID string) error
@@ -322,6 +323,19 @@ func (s *pluginStore) StoreUserInIndex(user *User) error {
 
 		return append(userIndex, newUser), nil
 	})
+}
+
+// ForceDeleteUser removes user data by key without needing to load/decrypt
+// the user record first. This is used when the encryption key has changed and
+// the stored user data can no longer be decrypted.
+func (s *pluginStore) ForceDeleteUser(mattermostUserID, remoteUserID string) error {
+	if err := s.userKV.Delete(mattermostUserID); err != nil {
+		s.Logger.Warnf("ForceDeleteUser: failed to delete user KV for %s: %v", mattermostUserID, err)
+	}
+	if err := s.mattermostUserIDKV.Delete(remoteUserID); err != nil {
+		s.Logger.Warnf("ForceDeleteUser: failed to delete mmuid KV for %s: %v", remoteUserID, err)
+	}
+	return s.DeleteUserFromIndex(mattermostUserID)
 }
 
 func (s *pluginStore) DeleteUserFromIndex(mattermostUserID string) error {

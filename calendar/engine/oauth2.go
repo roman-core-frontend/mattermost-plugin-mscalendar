@@ -80,8 +80,10 @@ func (app *oauth2App) CompleteOAuth2(authedUserID, code, state string) error {
 		return err
 	}
 
+	// The same Mattermost user reconnecting the same remote account is allowed: their stored user may be unreadable
+	// (e.g. after the encryption key was regenerated), and connecting again overwrites it with a fresh token.
 	uid, err := app.Store.LoadMattermostUserID(me.ID)
-	if err == nil {
+	if err == nil && uid != mattermostUserID {
 		user, userErr := app.PluginAPI.GetMattermostUser(uid)
 		if userErr == nil {
 			msg := fmt.Sprintf(RemoteUserAlreadyConnected, config.Provider.DisplayName, me.Mail, user.Username, config.Provider.CommandTrigger)
