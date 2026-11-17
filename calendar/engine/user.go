@@ -13,7 +13,6 @@ import (
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/remote"
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/store"
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/utils/bot"
-	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/utils/kvstore"
 )
 
 type Users interface {
@@ -131,10 +130,11 @@ func (m *mscalendar) DisconnectUser(mattermostUserID string) error {
 	if err == store.ErrNotFound {
 		return err
 	}
-	if errors.Is(err, kvstore.ErrDecrypt) {
-		// The stored user cannot be decrypted (the encryption key was changed), so it is removed without loading it.
-		// Its linked channel events and subscription cannot be read and are left behind.
-		m.Logger.Warnf("failed to decrypt user %s during disconnect, force-deleting it: %v", mattermostUserID, err)
+	if store.IsUnreadableUser(err) {
+		// The stored user cannot be read (it cannot be decrypted, e.g. the encryption key was changed, or it is not
+		// valid JSON), so it is removed without loading it. Its linked channel events and subscription cannot be read
+		// and are left behind.
+		m.Logger.Warnf("failed to read user %s during disconnect, force-deleting it: %v", mattermostUserID, err)
 		if delErr := m.Store.ForceDeleteUser(mattermostUserID); delErr != nil {
 			return delErr
 		}

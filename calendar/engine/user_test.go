@@ -4,6 +4,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -373,6 +374,23 @@ func TestDisconnectUser(t *testing.T) {
 				mscalendar.client = mockClient
 				mscalendar.actingUser = &User{MattermostUserID: MockRemoteUserID}
 				mockStore.EXPECT().LoadUser(MockMMUserID).Return(nil, fmt.Errorf("%w: cipher: message authentication failed", kvstore.ErrDecrypt)).Times(1)
+				mockLogger.EXPECT().Warnf(gomock.Any(), gomock.Any(), gomock.Any()).Times(1)
+				mockStore.EXPECT().ForceDeleteUser(MockMMUserID).Return(nil).Times(1)
+				mockWelcomer.EXPECT().AfterDisconnect(MockMMUserID).Return(nil).Times(1)
+			},
+			assertions: func(err error) {
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "error loading the user - invalid JSON, force-delete succeeds",
+			setupMock: func() {
+				mscalendar.client = mockClient
+				mscalendar.actingUser = &User{MattermostUserID: MockRemoteUserID}
+				// E.g. an unencrypted store (no decryption step) with corrupted data.
+				jsonErr := json.Unmarshal([]byte("not json"), &store.User{})
+				require.Error(t, jsonErr)
+				mockStore.EXPECT().LoadUser(MockMMUserID).Return(nil, jsonErr).Times(1)
 				mockLogger.EXPECT().Warnf(gomock.Any(), gomock.Any(), gomock.Any()).Times(1)
 				mockStore.EXPECT().ForceDeleteUser(MockMMUserID).Return(nil).Times(1)
 				mockWelcomer.EXPECT().AfterDisconnect(MockMMUserID).Return(nil).Times(1)

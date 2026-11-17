@@ -171,6 +171,21 @@ func (s *pluginStore) LoadUser(mattermostUserID string) (*User, error) {
 	return &user, nil
 }
 
+// IsUnreadableUser reports whether err from LoadUser means that a stored user exists but cannot be read: it cannot
+// be decrypted (e.g. the encryption key was changed) or its data is not valid JSON (e.g. it is corrupted). A missing
+// user (ErrNotFound) and KV store errors are not unreadable.
+func IsUnreadableUser(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, kvstore.ErrDecrypt) {
+		return true
+	}
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	return errors.As(err, &syntaxErr) || errors.As(err, &typeErr)
+}
+
 func (s *pluginStore) LoadMattermostUserID(remoteUserID string) (string, error) {
 	data, err := s.mattermostUserIDKV.Load(remoteUserID)
 	if err != nil {
