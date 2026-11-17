@@ -81,13 +81,25 @@ func (app *oauth2App) CompleteOAuth2(authedUserID, code, state string) error {
 		return err
 	}
 
-	// A stored user that cannot be decrypted (the encryption key was changed) is replaced by this connection: its
-	// own remote account mapping does not block it, and it is removed right before the new user is stored.
+	// A connected user cannot connect again (e.g. from a second pending connect link). A stored user that cannot be
+	// decrypted (the encryption key was changed) is replaced by this connection, and removed right before the new
+	// user is stored.
 	_, loadErr := app.Store.LoadUser(mattermostUserID)
+	if loadErr == nil {
+		return errors.New("user is already connected")
+	}
 	replaceUnreadable := errors.Is(loadErr, kvstore.ErrDecrypt)
+	if loadErr != store.ErrNotFound && !replaceUnreadable {
+		return errors.Wrap(loadErr, "error loading the stored user")
+	}
 
+	// A mapping of the remote account to this same Mattermost user never blocks the connection: storing the user
+	// overwrites it.
 	uid, err := app.Store.LoadMattermostUserID(me.ID)
-	if err == nil && !(replaceUnreadable && uid == mattermostUserID) {
+	if err != nil && err != store.ErrNotFound {
+		return errors.Wrap(err, "error checking whether the remote account is already connected")
+	}
+	if err == nil && uid != mattermostUserID {
 		user, userErr := app.PluginAPI.GetMattermostUser(uid)
 		if userErr == nil {
 			msg := fmt.Sprintf(RemoteUserAlreadyConnected, config.Provider.DisplayName, me.Mail, user.Username, config.Provider.CommandTrigger)

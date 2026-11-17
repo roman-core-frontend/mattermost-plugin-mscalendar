@@ -231,18 +231,8 @@ func (s *pluginStore) DeleteUser(mattermostUserID string) error {
 		return err
 	}
 
-	var userIndex []*UserShort
-	err = kvstore.LoadJSON(s.userIndexKV, "", &userIndex)
-	if err != nil {
-		return err
-	}
-	filtered := []*UserShort{}
-	for _, u := range userIndex {
-		if u.MattermostUserID != mattermostUserID {
-			filtered = append(filtered, u)
-		}
-	}
-	err = kvstore.StoreJSON(s.userIndexKV, "", &filtered)
+	// The index is updated atomically, so that a user connecting at the same time keeps their entry.
+	err = s.DeleteUserFromIndex(mattermostUserID)
 	if err != nil {
 		return err
 	}
@@ -358,6 +348,10 @@ func (s *pluginStore) ForceDeleteUser(mattermostUserID string) error {
 		return errors.Wrap(err, "error deleting the user")
 	}
 
+	return s.DeleteUserFromIndex(mattermostUserID)
+}
+
+func (s *pluginStore) DeleteUserFromIndex(mattermostUserID string) error {
 	return s.ModifyUserIndex(func(userIndex UserIndex) (UserIndex, error) {
 		filtered := UserIndex{}
 		for _, u := range userIndex {
@@ -366,17 +360,6 @@ func (s *pluginStore) ForceDeleteUser(mattermostUserID string) error {
 			}
 		}
 		return filtered, nil
-	})
-}
-
-func (s *pluginStore) DeleteUserFromIndex(mattermostUserID string) error {
-	return s.ModifyUserIndex(func(userIndex UserIndex) (UserIndex, error) {
-		for i, u := range userIndex {
-			if u.MattermostUserID == mattermostUserID {
-				return append(userIndex[:i], userIndex[i+1:]...), nil
-			}
-		}
-		return userIndex, nil
 	})
 }
 

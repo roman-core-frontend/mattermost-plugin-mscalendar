@@ -295,8 +295,8 @@ func TestDeleteUser(t *testing.T) {
 				mockAPI.On("KVGet", "user_c3b5020d58a049787bc969768465b890").Return([]byte(MockRemoteJSON), nil).Times(1)
 				mockAPI.On("KVDelete", "user_c3b5020d58a049787bc969768465b890").Return(nil).Times(1)
 				mockAPI.On("KVDelete", "mmuid_e138a0f218087f9324d8c77f87d5f3a0").Return(nil).Times(1)
-				mockAPI.On("KVGet", "userindex_").Return([]byte(`[]`), nil).Times(1)
-				mockAPI.On("KVSet", "userindex_", mock.Anything).Return(&model.AppError{Message: "error storing user"})
+				mockAPI.On("KVGet", "userindex_").Return([]byte(MockUserIndexJSON), nil).Times(1)
+				mockAPI.On("KVSetWithOptions", "userindex_", mock.Anything, mock.Anything).Return(false, &model.AppError{Message: "error storing user"})
 			},
 			assertions: func(t *testing.T, err error) {
 				require.ErrorContains(t, err, "error storing user")
@@ -308,8 +308,8 @@ func TestDeleteUser(t *testing.T) {
 				mockAPI.On("KVGet", "user_c3b5020d58a049787bc969768465b890").Return([]byte(MockRemoteJSON), nil).Times(1)
 				mockAPI.On("KVDelete", "user_c3b5020d58a049787bc969768465b890").Return(nil).Times(1)
 				mockAPI.On("KVDelete", "mmuid_e138a0f218087f9324d8c77f87d5f3a0").Return(nil).Times(1)
-				mockAPI.On("KVGet", "userindex_").Return([]byte(`[]`), nil).Times(1)
-				mockAPI.On("KVSet", "userindex_", mock.Anything).Return(nil)
+				mockAPI.On("KVGet", "userindex_").Return([]byte(MockUserIndexJSON), nil).Times(1)
+				mockAPI.On("KVSetWithOptions", "userindex_", mock.Anything, mock.Anything).Return(true, nil)
 			},
 			assertions: func(t *testing.T, err error) {
 				require.NoError(t, err)
