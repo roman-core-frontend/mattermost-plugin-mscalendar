@@ -14,6 +14,7 @@ import (
 
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/config"
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/store"
+	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/utils/kvstore"
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/utils/oauth2connect"
 )
 
@@ -80,10 +81,20 @@ func (app *oauth2App) CompleteOAuth2(authedUserID, code, state string) error {
 		return err
 	}
 
-	// The same Mattermost user reconnecting the same remote account is allowed: their stored user may be unreadable
-	// (e.g. after the encryption key was regenerated), and connecting again overwrites it with a fresh token.
+	// A stored user that cannot be decrypted (the encryption key was changed) is removed first, so that the user
+	// can connect again instead of being told that their own account is already connected.
+	if _, loadErr := app.Store.LoadUser(mattermostUserID); errors.Is(loadErr, kvstore.ErrDecrypt) {
+		indexUser, indexErr := app.Store.LoadUserFromIndex(mattermostUserID)
+		if indexErr != nil {
+			return errors.Wrapf(indexErr, "unable to find user %s in the user index to replace their unreadable data", mattermostUserID)
+		}
+		if delErr := app.Store.ForceDeleteUser(mattermostUserID, indexUser.RemoteID); delErr != nil {
+			return errors.Wrapf(delErr, "unable to remove the unreadable data of user %s", mattermostUserID)
+		}
+	}
+
 	uid, err := app.Store.LoadMattermostUserID(me.ID)
-	if err == nil && uid != mattermostUserID {
+	if err == nil {
 		user, userErr := app.PluginAPI.GetMattermostUser(uid)
 		if userErr == nil {
 			msg := fmt.Sprintf(RemoteUserAlreadyConnected, config.Provider.DisplayName, me.Mail, user.Username, config.Provider.CommandTrigger)

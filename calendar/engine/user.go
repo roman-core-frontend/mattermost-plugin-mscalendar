@@ -13,6 +13,7 @@ import (
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/remote"
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/store"
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/utils/bot"
+	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/utils/kvstore"
 )
 
 type Users interface {
@@ -124,31 +125,24 @@ func (user *User) Markdown() string {
 }
 
 func (m *mscalendar) DisconnectUser(mattermostUserID string) error {
-	m.AfterDisconnect(mattermostUserID)
-
-	// Note: we intentionally do NOT call m.Filter(withClient) up front here.
-	// A user whose refresh token has been revoked has already been marked
-	// inactive by DisconnectUserFromStoreIfNecessary (their stored
-	// OAuth2Token is nil), which means MakeUserClient will fail. Local
-	// disconnect must always succeed regardless of whether we can still talk
-	// to the remote provider — otherwise users who got the "you have been
-	// marked inactive, please disconnect and reconnect" DM would be unable
-	// to actually disconnect.
-
+	// The stored user is loaded before anything else, so that a user who is not connected gets no disconnect side
+	// effects (e.g. their pending connect link is kept).
 	storedUser, err := m.Store.LoadUser(mattermostUserID)
-	if err != nil {
-		if err == store.ErrNotFound {
-			return err
-		}
-
-		// Fall back to force-deleting using the unencrypted user index.
-		m.Logger.Warnf("failed to load user %s during disconnect, attempting force-delete: %v", mattermostUserID, err)
-		indexUser, indexErr := m.Store.LoadUserFromIndex(mattermostUserID)
-		if indexErr != nil {
-			return errors.Wrapf(err, "unable to load user for disconnect (index lookup also failed: %v)", indexErr)
-		}
-		return m.Store.ForceDeleteUser(mattermostUserID, indexUser.RemoteID)
+	if err == store.ErrNotFound {
+		return err
 	}
+	if errors.Is(err, kvstore.ErrDecrypt) {
+		// The stored user cannot be decrypted (the encryption key was changed), so it is removed by key using the
+		// unencrypted user index. Its linked channel events and subscription cannot be read and are left behind.
+		m.AfterDisconnect(mattermostUserID)
+		m.Logger.Warnf("failed to decrypt user %s during disconnect, force-deleting it: %v", mattermostUserID, err)
+		return m.forceDeleteUser(mattermostUserID)
+	}
+	if err != nil {
+		return err
+	}
+
+	m.AfterDisconnect(mattermostUserID)
 
 	// Unlink events owned by the user that is disconnecting its account
 	linkedEventsLeft := make(map[string]string)
@@ -181,11 +175,8 @@ func (m *mscalendar) DisconnectUser(mattermostUserID string) error {
 			return errors.WithMessagef(err, "failed to delete subscription %s", eventSubscriptionID)
 		}
 
-		// Best-effort: try to delete the remote subscription too. If the
-		// user's token cannot be refreshed (the most common reason
-		// disconnect runs in the first place), log and move on — Microsoft
-		// will expire the orphaned subscription on its own (~3 days), and
-		// blocking local disconnect on this would strand the user.
+		// Best-effort: the remote client is only built here, when it is needed, and failing to delete the remote
+		// subscription does not block the local disconnect (the remote side expires it on its own).
 		if errFilter := m.Filter(withClient); errFilter != nil {
 			m.Logger.With(bot.LogContext{
 				"err":            errFilter.Error(),
@@ -242,4 +233,13 @@ func (m *mscalendar) GetUserSettings(user *User) (*store.Settings, error) {
 	}
 
 	return &user.Settings, nil
+}
+
+// forceDeleteUser removes a user whose stored data cannot be decrypted, using the unencrypted user index.
+func (m *mscalendar) forceDeleteUser(mattermostUserID string) error {
+	indexUser, err := m.Store.LoadUserFromIndex(mattermostUserID)
+	if err != nil {
+		return errors.Wrapf(err, "unable to find user %s in the user index to force-delete it", mattermostUserID)
+	}
+	return m.Store.ForceDeleteUser(mattermostUserID, indexUser.RemoteID)
 }

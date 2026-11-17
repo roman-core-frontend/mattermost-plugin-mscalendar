@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func TestEncryptDecrypt(t *testing.T) {
@@ -109,4 +111,24 @@ func TestDecrypt(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEncryptedKeyStoreWrongKey(t *testing.T) {
+	oldKey := []byte("0123456789abcdef0123456789abcdef")
+	newKey := []byte("fedcba9876543210fedcba9876543210")
+
+	var stored []byte
+	m := &mockKVStore{}
+	m.On("Store", "user", mock.Anything).Run(func(args mock.Arguments) {
+		stored = args.Get(1).([]byte)
+	}).Return(nil)
+	require.NoError(t, NewEncryptedKeyStore(m, oldKey).Store("user", []byte(`{"a":1}`)))
+	m.On("Load", "user").Return(stored, nil)
+
+	_, err := NewEncryptedKeyStore(m, newKey).Load("user")
+	require.ErrorIs(t, err, ErrDecrypt, "data stored with the old key cannot be read with the new one")
+
+	plain, err := NewEncryptedKeyStore(m, oldKey).Load("user")
+	require.NoError(t, err)
+	require.Equal(t, `{"a":1}`, string(plain))
 }

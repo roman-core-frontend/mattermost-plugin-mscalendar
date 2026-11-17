@@ -8,6 +8,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"io"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -48,6 +49,9 @@ func encrypt(key []byte, data []byte) ([]byte, error) {
 	sealed := aesgcm.Seal(nil, nonce, data, nil)
 	return encode(append(nonce, sealed...)), nil
 }
+
+// ErrDecrypt is returned when a stored value cannot be decrypted, e.g. because the encryption key was changed.
+var ErrDecrypt = errors.New("cannot decrypt the stored value, the encryption key may have changed")
 
 func decrypt(key []byte, data []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
@@ -99,7 +103,11 @@ func (s encryptedKeyStore) Load(key string) ([]byte, error) {
 		return value, err
 	}
 
-	return decrypt(s.encryptionKey, value)
+	plain, err := decrypt(s.encryptionKey, value)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrDecrypt, err)
+	}
+	return plain, nil
 }
 
 func (s encryptedKeyStore) Store(key string, data []byte) error {

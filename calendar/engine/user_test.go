@@ -20,6 +20,7 @@ import (
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/store/mock_store"
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/utils/bot/mock_bot"
 
+	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/utils/kvstore"
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
@@ -345,11 +346,25 @@ func TestDisconnectUser(t *testing.T) {
 			setupMock: func() {
 				mscalendar.client = mockClient
 				mscalendar.actingUser = &User{MattermostUserID: MockRemoteUserID}
-				mockWelcomer.EXPECT().AfterDisconnect(MockMMUserID).Return(nil).Times(1)
+				// A user who is not connected gets no disconnect side effects.
+				mockWelcomer.EXPECT().AfterDisconnect(gomock.Any()).Times(0)
 				mockStore.EXPECT().LoadUser(MockMMUserID).Return(nil, store.ErrNotFound).Times(1)
 			},
 			assertions: func(err error) {
 				require.ErrorIs(t, err, store.ErrNotFound)
+			},
+		},
+		{
+			name: "error loading the user - transient error does not force-delete",
+			setupMock: func() {
+				mscalendar.client = mockClient
+				mscalendar.actingUser = &User{MattermostUserID: MockRemoteUserID}
+				mockWelcomer.EXPECT().AfterDisconnect(gomock.Any()).Times(0)
+				mockStore.EXPECT().LoadUser(MockMMUserID).Return(nil, errors.New("failed plugin KVGet")).Times(1)
+				mockStore.EXPECT().ForceDeleteUser(gomock.Any(), gomock.Any()).Times(0)
+			},
+			assertions: func(err error) {
+				require.ErrorContains(t, err, "failed plugin KVGet")
 			},
 		},
 		{
@@ -358,7 +373,7 @@ func TestDisconnectUser(t *testing.T) {
 				mscalendar.client = mockClient
 				mscalendar.actingUser = &User{MattermostUserID: MockRemoteUserID}
 				mockWelcomer.EXPECT().AfterDisconnect(MockMMUserID).Return(nil).Times(1)
-				mockStore.EXPECT().LoadUser(MockMMUserID).Return(nil, errors.New("cipher: message authentication failed")).Times(1)
+				mockStore.EXPECT().LoadUser(MockMMUserID).Return(nil, fmt.Errorf("%w: cipher: message authentication failed", kvstore.ErrDecrypt)).Times(1)
 				mockLogger.EXPECT().Warnf(gomock.Any(), gomock.Any(), gomock.Any()).Times(1)
 				mockStore.EXPECT().LoadUserFromIndex(MockMMUserID).Return(&store.UserShort{
 					MattermostUserID: MockMMUserID,
@@ -376,14 +391,14 @@ func TestDisconnectUser(t *testing.T) {
 				mscalendar.client = mockClient
 				mscalendar.actingUser = &User{MattermostUserID: MockRemoteUserID}
 				mockWelcomer.EXPECT().AfterDisconnect(MockMMUserID).Return(nil).Times(1)
-				mockStore.EXPECT().LoadUser(MockMMUserID).Return(nil, errors.New("cipher: message authentication failed")).Times(1)
+				mockStore.EXPECT().LoadUser(MockMMUserID).Return(nil, fmt.Errorf("%w: cipher: message authentication failed", kvstore.ErrDecrypt)).Times(1)
 				mockLogger.EXPECT().Warnf(gomock.Any(), gomock.Any(), gomock.Any()).Times(1)
 				mockStore.EXPECT().LoadUserFromIndex(MockMMUserID).Return(nil, store.ErrNotFound).Times(1)
 			},
 			assertions: func(err error) {
 				require.Error(t, err)
-				require.ErrorContains(t, err, "unable to load user for disconnect")
-				require.ErrorContains(t, err, "index lookup also failed")
+				require.ErrorContains(t, err, "unable to find user")
+				require.ErrorIs(t, err, store.ErrNotFound)
 			},
 		},
 		{
