@@ -132,11 +132,14 @@ func (m *mscalendar) DisconnectUser(mattermostUserID string) error {
 		return err
 	}
 	if errors.Is(err, kvstore.ErrDecrypt) {
-		// The stored user cannot be decrypted (the encryption key was changed), so it is removed by key using the
-		// unencrypted user index. Its linked channel events and subscription cannot be read and are left behind.
-		m.AfterDisconnect(mattermostUserID)
+		// The stored user cannot be decrypted (the encryption key was changed), so it is removed without loading it.
+		// Its linked channel events and subscription cannot be read and are left behind.
 		m.Logger.Warnf("failed to decrypt user %s during disconnect, force-deleting it: %v", mattermostUserID, err)
-		return m.forceDeleteUser(mattermostUserID)
+		if delErr := m.Store.ForceDeleteUser(mattermostUserID); delErr != nil {
+			return delErr
+		}
+		m.AfterDisconnect(mattermostUserID)
+		return nil
 	}
 	if err != nil {
 		return err
@@ -233,13 +236,4 @@ func (m *mscalendar) GetUserSettings(user *User) (*store.Settings, error) {
 	}
 
 	return &user.Settings, nil
-}
-
-// forceDeleteUser removes a user whose stored data cannot be decrypted, using the unencrypted user index.
-func (m *mscalendar) forceDeleteUser(mattermostUserID string) error {
-	indexUser, err := m.Store.LoadUserFromIndex(mattermostUserID)
-	if err != nil {
-		return errors.Wrapf(err, "unable to find user %s in the user index to force-delete it", mattermostUserID)
-	}
-	return m.Store.ForceDeleteUser(mattermostUserID, indexUser.RemoteID)
 }

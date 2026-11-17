@@ -127,17 +127,17 @@ func TestCompleteOAuth2ReplacesUnreadableUser(t *testing.T) {
 		ss.EXPECT().RefreshAndStoreToken(gomock.Any(), gomock.Any(), gomock.Any()).Return(&oauth2.Token{
 			AccessToken: "creator_oauth_token",
 		}, nil),
-		// The stored user cannot be decrypted (the encryption key was changed): it is removed first.
+		// The stored user cannot be decrypted (the encryption key was changed) and its mapping points to the same user:
+		// the connection goes through and replaces it.
 		ss.EXPECT().LoadUser(fakeID).Return(nil, fmt.Errorf("%w: cipher: message authentication failed", kvstore.ErrDecrypt)).Times(1),
-		ss.EXPECT().LoadUserFromIndex(fakeID).Return(&store.UserShort{MattermostUserID: fakeID, RemoteID: fakeRemoteID}, nil).Times(1),
-		ss.EXPECT().ForceDeleteUser(fakeID, fakeRemoteID).Return(nil).Times(1),
-		ss.EXPECT().LoadMattermostUserID(fakeRemoteID).Return("", store.ErrNotFound).Times(1),
+		ss.EXPECT().LoadMattermostUserID(fakeRemoteID).Return(fakeID, nil).Times(1),
 		aa.EXPECT().GetMattermostUser(fakeID).Return(&model.User{
 			Id:        fakeID,
 			Username:  "fake_username",
 			FirstName: "fake first name",
 			LastName:  "fake last name",
 		}, nil),
+		ss.EXPECT().ForceDeleteUser(fakeID).Return(nil).Times(1),
 		ss.EXPECT().StoreUser(gomock.Any()).Return(nil).Times(1),
 		ss.EXPECT().StoreUserInIndex(gomock.Any()).Return(nil).Times(1),
 		welcomer.EXPECT().AfterSuccessfullyConnect(fakeID, "mail-value").Return(nil).Times(1),
@@ -285,6 +285,32 @@ func TestCompleteOAuth2Errors(t *testing.T) {
 				poster.EXPECT().DM(
 					gomock.Eq("fake@mattermost.com"),
 					gomock.Eq(fmt.Sprintf(RemoteUserAlreadyConnected, config.Provider.DisplayName, "mail-value", "sample-username", config.Provider.CommandTrigger)),
+				).Return("post_id", nil).Times(1)
+			},
+		},
+		{
+			name:              "Unreadable user connecting a remote account mapped to another user",
+			mattermostUserID:  "fake@mattermost.com",
+			code:              fakeCode,
+			state:             "user_fake@mattermost.com",
+			registerResponder: statusOKGraphAPIResponder,
+			setup: func(d *Dependencies) {
+				papi := d.PluginAPI.(*mock_plugin_api.MockPluginAPI)
+				papi.EXPECT().GetMattermostUser("other@mattermost.com").Return(&model.User{Username: "other-username"}, nil)
+
+				ss := d.Store.(*mock_store.MockStore)
+				ss.EXPECT().LoadUser("fake@mattermost.com").Return(nil, fmt.Errorf("%w: bad data", kvstore.ErrDecrypt))
+				ss.EXPECT().LoadMattermostUserID("user-remote-id").Return("other@mattermost.com", nil)
+				ss.EXPECT().ForceDeleteUser(gomock.Any()).Times(0)
+				ss.EXPECT().VerifyOAuth2State(gomock.Eq("user_fake@mattermost.com")).Return(nil).Times(1)
+				ss.EXPECT().RefreshAndStoreToken(gomock.Any(), gomock.Any(), gomock.Any()).Return(&oauth2.Token{
+					AccessToken: "creator_oauth_token",
+				}, nil)
+
+				poster := d.Poster.(*mock_bot.MockPoster)
+				poster.EXPECT().DM(
+					gomock.Eq("fake@mattermost.com"),
+					gomock.Eq(fmt.Sprintf(RemoteUserAlreadyConnected, config.Provider.DisplayName, "mail-value", "other-username", config.Provider.CommandTrigger)),
 				).Return("post_id", nil).Times(1)
 			},
 		},

@@ -132,3 +132,12 @@ func TestEncryptedKeyStoreWrongKey(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, `{"a":1}`, string(plain))
 }
+
+func TestEncryptedKeyStoreInvalidKeyIsNotDecryptError(t *testing.T) {
+	m := &mockKVStore{}
+	m.On("Load", "user").Return([]byte("anything"), nil)
+
+	_, err := NewEncryptedKeyStore(m, []byte("short")).Load("user")
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrDecrypt, "an invalid key is a configuration error, not lost data")
+}

@@ -361,44 +361,39 @@ func TestDisconnectUser(t *testing.T) {
 				mscalendar.actingUser = &User{MattermostUserID: MockRemoteUserID}
 				mockWelcomer.EXPECT().AfterDisconnect(gomock.Any()).Times(0)
 				mockStore.EXPECT().LoadUser(MockMMUserID).Return(nil, errors.New("failed plugin KVGet")).Times(1)
-				mockStore.EXPECT().ForceDeleteUser(gomock.Any(), gomock.Any()).Times(0)
+				mockStore.EXPECT().ForceDeleteUser(gomock.Any()).Times(0)
 			},
 			assertions: func(err error) {
 				require.ErrorContains(t, err, "failed plugin KVGet")
 			},
 		},
 		{
-			name: "error loading the user - decryption error, fallback to force-delete succeeds",
+			name: "error loading the user - decryption error, force-delete succeeds",
 			setupMock: func() {
 				mscalendar.client = mockClient
 				mscalendar.actingUser = &User{MattermostUserID: MockRemoteUserID}
-				mockWelcomer.EXPECT().AfterDisconnect(MockMMUserID).Return(nil).Times(1)
 				mockStore.EXPECT().LoadUser(MockMMUserID).Return(nil, fmt.Errorf("%w: cipher: message authentication failed", kvstore.ErrDecrypt)).Times(1)
 				mockLogger.EXPECT().Warnf(gomock.Any(), gomock.Any(), gomock.Any()).Times(1)
-				mockStore.EXPECT().LoadUserFromIndex(MockMMUserID).Return(&store.UserShort{
-					MattermostUserID: MockMMUserID,
-					RemoteID:         MockRemoteUserID,
-				}, nil).Times(1)
-				mockStore.EXPECT().ForceDeleteUser(MockMMUserID, MockRemoteUserID).Return(nil).Times(1)
+				mockStore.EXPECT().ForceDeleteUser(MockMMUserID).Return(nil).Times(1)
+				mockWelcomer.EXPECT().AfterDisconnect(MockMMUserID).Return(nil).Times(1)
 			},
 			assertions: func(err error) {
 				require.NoError(t, err)
 			},
 		},
 		{
-			name: "error loading the user - decryption error, fallback fails on index lookup",
+			name: "error loading the user - decryption error, force-delete fails",
 			setupMock: func() {
 				mscalendar.client = mockClient
 				mscalendar.actingUser = &User{MattermostUserID: MockRemoteUserID}
-				mockWelcomer.EXPECT().AfterDisconnect(MockMMUserID).Return(nil).Times(1)
 				mockStore.EXPECT().LoadUser(MockMMUserID).Return(nil, fmt.Errorf("%w: cipher: message authentication failed", kvstore.ErrDecrypt)).Times(1)
 				mockLogger.EXPECT().Warnf(gomock.Any(), gomock.Any(), gomock.Any()).Times(1)
-				mockStore.EXPECT().LoadUserFromIndex(MockMMUserID).Return(nil, store.ErrNotFound).Times(1)
+				mockStore.EXPECT().ForceDeleteUser(MockMMUserID).Return(errors.New("error deleting the user")).Times(1)
+				// The user is still stored, so there are no disconnect side effects.
+				mockWelcomer.EXPECT().AfterDisconnect(gomock.Any()).Times(0)
 			},
 			assertions: func(err error) {
-				require.Error(t, err)
-				require.ErrorContains(t, err, "unable to find user")
-				require.ErrorIs(t, err, store.ErrNotFound)
+				require.ErrorContains(t, err, "error deleting the user")
 			},
 		},
 		{

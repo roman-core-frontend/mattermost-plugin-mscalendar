@@ -64,20 +64,22 @@ func decrypt(key []byte, data []byte) ([]byte, error) {
 		return []byte(""), err
 	}
 
+	// Errors below mean the stored data does not match the key (e.g. the key was changed), as opposed to an
+	// invalid key in the configuration above.
 	decoded, err := decode(data)
 	if err != nil {
-		return []byte(""), err
+		return []byte(""), fmt.Errorf("%w: %v", ErrDecrypt, err)
 	}
 
 	nonceSize := aesgcm.NonceSize()
 	if len(decoded) < nonceSize {
-		return []byte(""), errors.New("token too short")
+		return []byte(""), fmt.Errorf("%w: token too short", ErrDecrypt)
 	}
 
 	nonce, encrypted := decoded[:nonceSize], decoded[nonceSize:]
 	plain, err := aesgcm.Open(nil, nonce, encrypted, nil)
 	if err != nil {
-		return []byte(""), err
+		return []byte(""), fmt.Errorf("%w: %v", ErrDecrypt, err)
 	}
 
 	return plain, nil
@@ -103,11 +105,7 @@ func (s encryptedKeyStore) Load(key string) ([]byte, error) {
 		return value, err
 	}
 
-	plain, err := decrypt(s.encryptionKey, value)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrDecrypt, err)
-	}
-	return plain, nil
+	return decrypt(s.encryptionKey, value)
 }
 
 func (s encryptedKeyStore) Store(key string, data []byte) error {

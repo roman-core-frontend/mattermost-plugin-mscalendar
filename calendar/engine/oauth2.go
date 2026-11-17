@@ -81,20 +81,13 @@ func (app *oauth2App) CompleteOAuth2(authedUserID, code, state string) error {
 		return err
 	}
 
-	// A stored user that cannot be decrypted (the encryption key was changed) is removed first, so that the user
-	// can connect again instead of being told that their own account is already connected.
-	if _, loadErr := app.Store.LoadUser(mattermostUserID); errors.Is(loadErr, kvstore.ErrDecrypt) {
-		indexUser, indexErr := app.Store.LoadUserFromIndex(mattermostUserID)
-		if indexErr != nil {
-			return errors.Wrapf(indexErr, "unable to find user %s in the user index to replace their unreadable data", mattermostUserID)
-		}
-		if delErr := app.Store.ForceDeleteUser(mattermostUserID, indexUser.RemoteID); delErr != nil {
-			return errors.Wrapf(delErr, "unable to remove the unreadable data of user %s", mattermostUserID)
-		}
-	}
+	// A stored user that cannot be decrypted (the encryption key was changed) is replaced by this connection: its
+	// own remote account mapping does not block it, and it is removed right before the new user is stored.
+	_, loadErr := app.Store.LoadUser(mattermostUserID)
+	replaceUnreadable := errors.Is(loadErr, kvstore.ErrDecrypt)
 
 	uid, err := app.Store.LoadMattermostUserID(me.ID)
-	if err == nil {
+	if err == nil && !(replaceUnreadable && uid == mattermostUserID) {
 		user, userErr := app.PluginAPI.GetMattermostUser(uid)
 		if userErr == nil {
 			msg := fmt.Sprintf(RemoteUserAlreadyConnected, config.Provider.DisplayName, me.Mail, user.Username, config.Provider.CommandTrigger)
@@ -138,6 +131,12 @@ func (app *oauth2App) CompleteOAuth2(authedUserID, code, state string) error {
 		PostTime: "8:00AM",
 		Timezone: mailboxSettings.TimeZone,
 		Enable:   false,
+	}
+
+	if replaceUnreadable {
+		if err = app.Store.ForceDeleteUser(mattermostUserID); err != nil {
+			return errors.Wrapf(err, "unable to remove the unreadable data of user %s", mattermostUserID)
+		}
 	}
 
 	err = app.Store.StoreUser(u)
