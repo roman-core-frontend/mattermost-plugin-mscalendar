@@ -14,6 +14,7 @@ import (
 
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/config"
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/store"
+	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/utils/kvstore"
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/utils/oauth2connect"
 )
 
@@ -88,8 +89,23 @@ func (app *oauth2App) CompleteOAuth2(authedUserID, code, state string) error {
 		return err
 	}
 
+	// A connected user cannot connect again (e.g. from a second pending connect link). A stored user that cannot be
+	// decrypted (the encryption key was changed) is replaced by this connection, and removed right before the new
+	// user is stored.
+	_, loadErr := app.Store.LoadUser(mattermostUserID)
+	if loadErr == nil {
+		return errors.New("user is already connected")
+	}
+	// Any other load error (e.g. a corrupted record) is overwritten by storing the new user, as before.
+	replaceUnreadable := errors.Is(loadErr, kvstore.ErrDecrypt)
+
+	// A mapping of the remote account to this same Mattermost user never blocks the connection: storing the user
+	// overwrites it.
 	uid, err := app.Store.LoadMattermostUserID(me.ID)
-	if err == nil {
+	if err != nil && err != store.ErrNotFound {
+		return errors.Wrap(err, "error checking whether the remote account is already connected")
+	}
+	if err == nil && uid != mattermostUserID {
 		user, userErr := app.PluginAPI.GetMattermostUser(uid)
 		if userErr == nil {
 			msg := fmt.Sprintf(RemoteUserAlreadyConnected, config.Provider.DisplayName, me.Mail, user.Username, config.Provider.CommandTrigger)
@@ -133,6 +149,12 @@ func (app *oauth2App) CompleteOAuth2(authedUserID, code, state string) error {
 		PostTime: "8:00AM",
 		Timezone: mailboxSettings.TimeZone,
 		Enable:   false,
+	}
+
+	if replaceUnreadable {
+		if err = app.Store.ForceDeleteUser(mattermostUserID); err != nil {
+			return errors.Wrapf(err, "unable to remove the unreadable data of user %s", mattermostUserID)
+		}
 	}
 
 	err = app.Store.StoreUser(u)

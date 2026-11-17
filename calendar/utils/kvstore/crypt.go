@@ -8,6 +8,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"io"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -49,6 +50,9 @@ func encrypt(key []byte, data []byte) ([]byte, error) {
 	return encode(append(nonce, sealed...)), nil
 }
 
+// ErrDecrypt is returned when a stored value cannot be decrypted, e.g. because the encryption key was changed.
+var ErrDecrypt = errors.New("cannot decrypt the stored value, the encryption key may have changed")
+
 func decrypt(key []byte, data []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -60,20 +64,22 @@ func decrypt(key []byte, data []byte) ([]byte, error) {
 		return []byte(""), err
 	}
 
+	// Errors below mean the stored data does not match the key (e.g. the key was changed), as opposed to an
+	// invalid key in the configuration above.
 	decoded, err := decode(data)
 	if err != nil {
-		return []byte(""), err
+		return []byte(""), fmt.Errorf("%w: %v", ErrDecrypt, err)
 	}
 
 	nonceSize := aesgcm.NonceSize()
 	if len(decoded) < nonceSize {
-		return []byte(""), errors.New("token too short")
+		return []byte(""), fmt.Errorf("%w: token too short", ErrDecrypt)
 	}
 
 	nonce, encrypted := decoded[:nonceSize], decoded[nonceSize:]
 	plain, err := aesgcm.Open(nil, nonce, encrypted, nil)
 	if err != nil {
-		return []byte(""), err
+		return []byte(""), fmt.Errorf("%w: %v", ErrDecrypt, err)
 	}
 
 	return plain, nil

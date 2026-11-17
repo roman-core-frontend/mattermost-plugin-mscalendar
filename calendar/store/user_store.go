@@ -35,11 +35,11 @@ type UserStore interface {
 	StoreUser(user *User) error
 	LoadUserFromIndex(mattermostUserID string) (*UserShort, error)
 	DeleteUser(mattermostUserID string) error
-	ForceDeleteUser(mattermostUserID, remoteUserID string) error
 	GetConnectedUserCount() (uint64, error)
 	ModifyUserIndex(modify func(userIndex UserIndex) (UserIndex, error)) error
 	StoreUserInIndex(user *User) error
 	DeleteUserFromIndex(mattermostUserID string) error
+	ForceDeleteUser(mattermostUserID string) error
 	StoreUserActiveEvents(mattermostUserID string, events []string) error
 	ClearUserBusyPeriod(mattermostUserID string) error
 	StoreUserLinkedEvent(mattermostUserID, eventID, channelID string) error
@@ -231,36 +231,13 @@ func (s *pluginStore) DeleteUser(mattermostUserID string) error {
 		return err
 	}
 
-	var userIndex []*UserShort
-	err = kvstore.LoadJSON(s.userIndexKV, "", &userIndex)
-	if err != nil {
-		return err
-	}
-	filtered := []*UserShort{}
-	for _, u := range userIndex {
-		if u.MattermostUserID != mattermostUserID {
-			filtered = append(filtered, u)
-		}
-	}
-	err = kvstore.StoreJSON(s.userIndexKV, "", &filtered)
+	// The index is updated atomically, so that a user connecting at the same time keeps their entry.
+	err = s.DeleteUserFromIndex(mattermostUserID)
 	if err != nil {
 		return err
 	}
 
 	return nil
-}
-
-// ForceDeleteUser removes user data by key without needing to load/decrypt
-// the user record first. This is used when the encryption key has changed and
-// the stored user data can no longer be decrypted.
-func (s *pluginStore) ForceDeleteUser(mattermostUserID, remoteUserID string) error {
-	if err := s.userKV.Delete(mattermostUserID); err != nil {
-		s.Logger.Warnf("ForceDeleteUser: failed to delete user KV for %s: %v", mattermostUserID, err)
-	}
-	if err := s.mattermostUserIDKV.Delete(remoteUserID); err != nil {
-		s.Logger.Warnf("ForceDeleteUser: failed to delete mmuid KV for %s: %v", remoteUserID, err)
-	}
-	return s.DeleteUserFromIndex(mattermostUserID)
 }
 
 func (s *pluginStore) GetConnectedUserCount() (uint64, error) {
@@ -338,14 +315,52 @@ func (s *pluginStore) StoreUserInIndex(user *User) error {
 	})
 }
 
+// ForceDeleteUser removes a user without loading it, e.g. one whose stored data cannot be decrypted. It deletes the
+// remote account mappings that still point to this user (found through the unencrypted user index), then the user
+// record, then every user index entry of the user. Each step returns its error, so a failed attempt can simply be
+// retried.
+func (s *pluginStore) ForceDeleteUser(mattermostUserID string) error {
+	index, err := s.LoadUserIndex()
+	if err != nil && err != ErrNotFound {
+		return errors.Wrap(err, "error loading the user index")
+	}
+
+	for _, u := range index {
+		if u.MattermostUserID != mattermostUserID || u.RemoteID == "" {
+			continue
+		}
+		mapped, loadErr := s.LoadMattermostUserID(u.RemoteID)
+		if loadErr == ErrNotFound {
+			continue
+		}
+		if loadErr != nil {
+			return errors.Wrap(loadErr, "error loading the remote account mapping")
+		}
+		if mapped != mattermostUserID {
+			// The remote account now belongs to another Mattermost user.
+			continue
+		}
+		if delErr := s.mattermostUserIDKV.Delete(u.RemoteID); delErr != nil {
+			return errors.Wrap(delErr, "error deleting the remote account mapping")
+		}
+	}
+
+	if err = s.userKV.Delete(mattermostUserID); err != nil {
+		return errors.Wrap(err, "error deleting the user")
+	}
+
+	return s.DeleteUserFromIndex(mattermostUserID)
+}
+
 func (s *pluginStore) DeleteUserFromIndex(mattermostUserID string) error {
 	return s.ModifyUserIndex(func(userIndex UserIndex) (UserIndex, error) {
-		for i, u := range userIndex {
-			if u.MattermostUserID == mattermostUserID {
-				return append(userIndex[:i], userIndex[i+1:]...), nil
+		filtered := UserIndex{}
+		for _, u := range userIndex {
+			if u.MattermostUserID != mattermostUserID {
+				filtered = append(filtered, u)
 			}
 		}
-		return userIndex, nil
+		return filtered, nil
 	})
 }
 

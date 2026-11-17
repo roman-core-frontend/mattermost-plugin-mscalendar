@@ -391,7 +391,7 @@ func (p *Plugin) reEncryptUserData(e *Env, previousEncryptionKey string) {
 				"mm_user_id", u.MattermostUserID,
 				"error", loadErr.Error(),
 			)
-			if delErr := e.Dependencies.Store.ForceDeleteUser(u.MattermostUserID, u.RemoteID); delErr != nil {
+			if delErr := e.Dependencies.Store.ForceDeleteUser(u.MattermostUserID); delErr != nil {
 				p.API.LogWarn("Failed to force-delete user during encryption key rotation",
 					"mm_user_id", u.MattermostUserID,
 					"error", delErr.Error(),
@@ -435,7 +435,7 @@ func (p *Plugin) cleanupUserRelatedData(e *Env, user *store.User, indexEntry *st
 		}
 	}
 
-	if delErr := e.Dependencies.Store.ForceDeleteUser(indexEntry.MattermostUserID, indexEntry.RemoteID); delErr != nil {
+	if delErr := e.Dependencies.Store.ForceDeleteUser(indexEntry.MattermostUserID); delErr != nil {
 		p.API.LogWarn("Failed to force-delete user during encryption key rotation",
 			"mm_user_id", indexEntry.MattermostUserID,
 			"error", delErr.Error(),

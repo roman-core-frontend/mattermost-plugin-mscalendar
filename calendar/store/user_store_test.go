@@ -297,8 +297,8 @@ func TestDeleteUser(t *testing.T) {
 				mockAPI.On("KVGet", "user_c3b5020d58a049787bc969768465b890").Return([]byte(MockRemoteJSON), nil).Times(1)
 				mockAPI.On("KVDelete", "user_c3b5020d58a049787bc969768465b890").Return(nil).Times(1)
 				mockAPI.On("KVDelete", "mmuid_e138a0f218087f9324d8c77f87d5f3a0").Return(nil).Times(1)
-				mockAPI.On("KVGet", "userindex_").Return([]byte(`[]`), nil).Times(1)
-				mockAPI.On("KVSet", "userindex_", mock.Anything).Return(&model.AppError{Message: "error storing user"})
+				mockAPI.On("KVGet", "userindex_").Return([]byte(MockUserIndexJSON), nil).Times(1)
+				mockAPI.On("KVSetWithOptions", "userindex_", mock.Anything, mock.Anything).Return(false, &model.AppError{Message: "error storing user"})
 			},
 			assertions: func(t *testing.T, err error) {
 				require.ErrorContains(t, err, "error storing user")
@@ -310,8 +310,8 @@ func TestDeleteUser(t *testing.T) {
 				mockAPI.On("KVGet", "user_c3b5020d58a049787bc969768465b890").Return([]byte(MockRemoteJSON), nil).Times(1)
 				mockAPI.On("KVDelete", "user_c3b5020d58a049787bc969768465b890").Return(nil).Times(1)
 				mockAPI.On("KVDelete", "mmuid_e138a0f218087f9324d8c77f87d5f3a0").Return(nil).Times(1)
-				mockAPI.On("KVGet", "userindex_").Return([]byte(`[]`), nil).Times(1)
-				mockAPI.On("KVSet", "userindex_", mock.Anything).Return(nil)
+				mockAPI.On("KVGet", "userindex_").Return([]byte(MockUserIndexJSON), nil).Times(1)
+				mockAPI.On("KVSetWithOptions", "userindex_", mock.Anything, mock.Anything).Return(true, nil)
 			},
 			assertions: func(t *testing.T, err error) {
 				require.NoError(t, err)
@@ -331,31 +331,25 @@ func TestDeleteUser(t *testing.T) {
 	}
 }
 
-func TestForceDeleteUser(t *testing.T) {
+// TestForceDeleteUserWithPluginAPI checks the KV keys ForceDeleteUser uses through the plugin API.
+func TestForceDeleteUserWithPluginAPI(t *testing.T) {
+	const (
+		userKey   = "user_c3b5020d58a049787bc969768465b890"
+		mmuidKey  = "mmuid_e138a0f218087f9324d8c77f87d5f3a0"
+		indexJSON = `[{"mm_id":"mockMMUserID","remote_id":"mockRemoteID"}]`
+	)
 	tests := []struct {
 		name       string
-		setup      func(*testutil.MockPluginAPI, *mock_bot.MockLogger)
+		setup      func(*testutil.MockPluginAPI)
 		assertions func(*testing.T, error)
 	}{
 		{
-			name: "Success force-deleting user even if KVDelete calls fail for user and mmuid",
-			setup: func(mockAPI *testutil.MockPluginAPI, mockLogger *mock_bot.MockLogger) {
-				mockAPI.On("KVDelete", "user_c3b5020d58a049787bc969768465b890").Return(&model.AppError{Message: "delete failed"})
-				mockAPI.On("KVDelete", "mmuid_e138a0f218087f9324d8c77f87d5f3a0").Return(&model.AppError{Message: "delete failed"})
-				mockLogger.EXPECT().Warnf(gomock.Any(), gomock.Any(), gomock.Any()).Times(2)
-				mockAPI.On("KVGet", "userindex_").Return([]byte(MockUserIndexJSON), nil).Times(1)
-				mockAPI.On("KVSetWithOptions", "userindex_", mock.Anything, mock.Anything).Return(true, nil).Times(1)
-			},
-			assertions: func(t *testing.T, err error) {
-				require.NoError(t, err)
-			},
-		},
-		{
 			name: "Success force-deleting user",
-			setup: func(mockAPI *testutil.MockPluginAPI, mockLogger *mock_bot.MockLogger) {
-				mockAPI.On("KVDelete", "user_c3b5020d58a049787bc969768465b890").Return(nil)
-				mockAPI.On("KVDelete", "mmuid_e138a0f218087f9324d8c77f87d5f3a0").Return(nil)
-				mockAPI.On("KVGet", "userindex_").Return([]byte(MockUserIndexJSON), nil).Times(1)
+			setup: func(mockAPI *testutil.MockPluginAPI) {
+				mockAPI.On("KVGet", "userindex_").Return([]byte(indexJSON), nil).Times(2)
+				mockAPI.On("KVGet", mmuidKey).Return([]byte(MockMMUserID), nil).Times(1)
+				mockAPI.On("KVDelete", mmuidKey).Return(nil).Times(1)
+				mockAPI.On("KVDelete", userKey).Return(nil).Times(1)
 				mockAPI.On("KVSetWithOptions", "userindex_", mock.Anything, mock.Anything).Return(true, nil).Times(1)
 			},
 			assertions: func(t *testing.T, err error) {
@@ -363,24 +357,33 @@ func TestForceDeleteUser(t *testing.T) {
 			},
 		},
 		{
-			name: "Error deleting user from index propagates",
-			setup: func(mockAPI *testutil.MockPluginAPI, mockLogger *mock_bot.MockLogger) {
-				mockAPI.On("KVDelete", "user_c3b5020d58a049787bc969768465b890").Return(nil)
-				mockAPI.On("KVDelete", "mmuid_e138a0f218087f9324d8c77f87d5f3a0").Return(nil)
+			name: "Error deleting the user is returned and the index is kept",
+			setup: func(mockAPI *testutil.MockPluginAPI) {
+				mockAPI.On("KVGet", "userindex_").Return([]byte(indexJSON), nil).Times(1)
+				mockAPI.On("KVGet", mmuidKey).Return([]byte(MockMMUserID), nil).Times(1)
+				mockAPI.On("KVDelete", mmuidKey).Return(nil).Times(1)
+				mockAPI.On("KVDelete", userKey).Return(&model.AppError{Message: "delete failed"}).Times(1)
+			},
+			assertions: func(t *testing.T, err error) {
+				require.ErrorContains(t, err, "error deleting the user")
+			},
+		},
+		{
+			name: "Error loading the user index propagates",
+			setup: func(mockAPI *testutil.MockPluginAPI) {
 				mockAPI.On("KVGet", "userindex_").Return(nil, &model.AppError{Message: "KVGet failed"}).Times(1)
 			},
 			assertions: func(t *testing.T, err error) {
-				require.Error(t, err)
 				require.ErrorContains(t, err, "KVGet failed")
 			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mockAPI, store, mockLogger, _, _ := GetMockSetup(t)
-			tt.setup(mockAPI, mockLogger)
+			mockAPI, store, _, _, _ := GetMockSetup(t)
+			tt.setup(mockAPI)
 
-			err := store.ForceDeleteUser(MockMMUserID, MockRemoteID)
+			err := store.ForceDeleteUser(MockMMUserID)
 
 			tt.assertions(t, err)
 			mockAPI.AssertExpectations(t)
@@ -1137,4 +1140,92 @@ func TestDisconnectUserFromStoreIfNecessary_Idempotent(t *testing.T) {
 	store.DisconnectUserFromStoreIfNecessary(refreshErr, MockMMUserID)
 
 	mockAPI.AssertExpectations(t)
+}
+
+// memKV is an in-memory kvstore.KVStore for store tests. failDelete makes Delete fail for the given keys.
+type memKV struct {
+	data       map[string][]byte
+	failDelete map[string]bool
+}
+
+func newMemKV() *memKV { return &memKV{data: map[string][]byte{}, failDelete: map[string]bool{}} }
+
+func (m *memKV) Load(key string) ([]byte, error) {
+	v, ok := m.data[key]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return v, nil
+}
+func (m *memKV) Store(key string, data []byte) error { m.data[key] = data; return nil }
+func (m *memKV) StoreTTL(key string, data []byte, _ int64) error {
+	m.data[key] = data
+	return nil
+}
+func (m *memKV) StoreWithOptions(key string, value []byte, _ model.PluginKVSetOptions) (bool, error) {
+	m.data[key] = value
+	return true, nil
+}
+func (m *memKV) Delete(key string) error {
+	if m.failDelete[key] {
+		return errors.New("delete failed")
+	}
+	delete(m.data, key)
+	return nil
+}
+func (m *memKV) List(_, _ int) ([]string, error) { return nil, nil }
+
+func newForceDeleteTestStore(t *testing.T, index string, mappings map[string]string) (*pluginStore, *memKV, *memKV, *memKV) {
+	users, mmIDs, idx := newMemKV(), newMemKV(), newMemKV()
+	users.data["userA"] = []byte("unreadable")
+	for remoteID, mmID := range mappings {
+		mmIDs.data[remoteID] = []byte(mmID)
+	}
+	if index != "" {
+		idx.data[""] = []byte(index)
+	}
+	return &pluginStore{userKV: users, mattermostUserIDKV: mmIDs, userIndexKV: idx}, users, mmIDs, idx
+}
+
+func TestForceDeleteUser(t *testing.T) {
+	index := `[{"mm_id":"userA","remote_id":"remoteA"},{"mm_id":"userB","remote_id":"remoteB"},{"mm_id":"userA","remote_id":"remoteOld"}]`
+
+	t.Run("deletes the user, their own mappings and all their index entries", func(t *testing.T) {
+		s, users, mmIDs, idx := newForceDeleteTestStore(t, index, map[string]string{"remoteA": "userA", "remoteB": "userB", "remoteOld": "userC"})
+		require.NoError(t, s.ForceDeleteUser("userA"))
+
+		require.NotContains(t, users.data, "userA")
+		require.NotContains(t, mmIDs.data, "remoteA")
+		require.Equal(t, "userB", string(mmIDs.data["remoteB"]))
+		require.Equal(t, "userC", string(mmIDs.data["remoteOld"]), "a remote account now mapped to another user is kept")
+		var left UserIndex
+		require.NoError(t, json.Unmarshal(idx.data[""], &left))
+		require.Len(t, left, 1)
+		require.Equal(t, "userB", left[0].MattermostUserID)
+	})
+
+	t.Run("without an index entry the user record is still deleted", func(t *testing.T) {
+		s, users, _, _ := newForceDeleteTestStore(t, "", nil)
+		require.NoError(t, s.ForceDeleteUser("userA"))
+		require.NotContains(t, users.data, "userA")
+	})
+
+	t.Run("a failed delete is returned and the index is kept for a retry", func(t *testing.T) {
+		s, users, mmIDs, idx := newForceDeleteTestStore(t, index, map[string]string{"remoteA": "userA"})
+		users.failDelete["userA"] = true
+		require.ErrorContains(t, s.ForceDeleteUser("userA"), "error deleting the user")
+		require.NotContains(t, mmIDs.data, "remoteA")
+		require.Equal(t, index, string(idx.data[""]))
+
+		users.failDelete["userA"] = false
+		require.NoError(t, s.ForceDeleteUser("userA"), "retrying succeeds")
+		require.NotContains(t, users.data, "userA")
+	})
+
+	t.Run("a failed mapping delete stops before the user record", func(t *testing.T) {
+		s, users, mmIDs, _ := newForceDeleteTestStore(t, index, map[string]string{"remoteA": "userA"})
+		mmIDs.failDelete["remoteA"] = true
+		require.ErrorContains(t, s.ForceDeleteUser("userA"), "error deleting the remote account mapping")
+		require.Contains(t, users.data, "userA")
+	})
 }

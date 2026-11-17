@@ -25,6 +25,7 @@ import (
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/store/mock_store"
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/utils/bot"
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/utils/bot/mock_bot"
+	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/utils/kvstore"
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/utils/oauth2connect"
 	"github.com/mattermost/mattermost-plugin-mscalendar/msgraph"
 )
@@ -72,13 +73,126 @@ func TestCompleteOAuth2Happy(t *testing.T) {
 		ss.EXPECT().RefreshAndStoreToken(gomock.Any(), gomock.Any(), gomock.Any()).Return(&oauth2.Token{
 			AccessToken: "creator_oauth_token",
 		}, nil),
-		ss.EXPECT().LoadMattermostUserID(fakeRemoteID).Return("", errors.New("connected user not found")).Times(1),
+		ss.EXPECT().LoadUser(fakeID).Return(nil, store.ErrNotFound).Times(1),
+		ss.EXPECT().LoadMattermostUserID(fakeRemoteID).Return("", store.ErrNotFound).Times(1),
 		aa.EXPECT().GetMattermostUser(fakeID).Return(&model.User{
 			Id:        fakeID,
 			Username:  "fake_username",
 			FirstName: "fake first name",
 			LastName:  "fake last name",
 		}, nil),
+		ss.EXPECT().StoreUser(gomock.Any()).Return(nil).Times(1),
+		ss.EXPECT().StoreUserInIndex(gomock.Any()).Return(nil).Times(1),
+		welcomer.EXPECT().AfterSuccessfullyConnect(fakeID, "mail-value").Return(nil).Times(1),
+	)
+
+	err = app.CompleteOAuth2(fakeID, fakeCode, state)
+	require.NoError(t, err)
+}
+
+func TestCompleteOAuth2MappingToSelfDoesNotBlock(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	httpmock.Activate()
+	defer httpmock.DeactivateAndReset()
+	statusOKGraphAPIResponder()
+
+	app, env := newOAuth2TestApp(ctrl)
+	ss := env.Dependencies.Store.(*mock_store.MockStore)
+	aa := env.PluginAPI.(*mock_plugin_api.MockPluginAPI)
+	welcomer := env.Dependencies.Welcomer.(*mock_welcomer.MockWelcomer)
+
+	state := ""
+	gomock.InOrder(
+		ss.EXPECT().LoadUser(fakeID).Return(nil, errors.New("connected user not found")).Times(1),
+		ss.EXPECT().StoreOAuth2State(gomock.Any()).DoAndReturn(
+			func(s string) error {
+				if !strings.HasSuffix(s, "_"+fakeID) {
+					return errors.New("invalid state " + s)
+				}
+				state = s
+				return nil
+			},
+		).Times(1),
+	)
+
+	redirectURL, err := app.InitOAuth2(fakeID)
+	require.NoError(t, err)
+	require.NotEmpty(t, redirectURL)
+	require.NotEmpty(t, state)
+
+	gomock.InOrder(
+		ss.EXPECT().VerifyOAuth2State(gomock.Eq(state)).Return(nil).Times(1),
+		ss.EXPECT().RefreshAndStoreToken(gomock.Any(), gomock.Any(), gomock.Any()).Return(&oauth2.Token{
+			AccessToken: "creator_oauth_token",
+		}, nil),
+		ss.EXPECT().LoadUser(fakeID).Return(nil, store.ErrNotFound).Times(1),
+		// A leftover mapping of the remote account to this same user (no stored user) is overwritten.
+		ss.EXPECT().LoadMattermostUserID(fakeRemoteID).Return(fakeID, nil).Times(1),
+		aa.EXPECT().GetMattermostUser(fakeID).Return(&model.User{
+			Id:        fakeID,
+			Username:  "fake_username",
+			FirstName: "fake first name",
+			LastName:  "fake last name",
+		}, nil),
+		ss.EXPECT().StoreUser(gomock.Any()).Return(nil).Times(1),
+		ss.EXPECT().StoreUserInIndex(gomock.Any()).Return(nil).Times(1),
+		welcomer.EXPECT().AfterSuccessfullyConnect(fakeID, "mail-value").Return(nil).Times(1),
+	)
+
+	err = app.CompleteOAuth2(fakeID, fakeCode, state)
+	require.NoError(t, err)
+}
+
+func TestCompleteOAuth2ReplacesUnreadableUser(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	httpmock.Activate()
+	defer httpmock.DeactivateAndReset()
+	statusOKGraphAPIResponder()
+
+	app, env := newOAuth2TestApp(ctrl)
+	ss := env.Dependencies.Store.(*mock_store.MockStore)
+	aa := env.PluginAPI.(*mock_plugin_api.MockPluginAPI)
+	welcomer := env.Dependencies.Welcomer.(*mock_welcomer.MockWelcomer)
+
+	state := ""
+	gomock.InOrder(
+		ss.EXPECT().LoadUser(fakeID).Return(nil, errors.New("connected user not found")).Times(1),
+		ss.EXPECT().StoreOAuth2State(gomock.Any()).DoAndReturn(
+			func(s string) error {
+				if !strings.HasSuffix(s, "_"+fakeID) {
+					return errors.New("invalid state " + s)
+				}
+				state = s
+				return nil
+			},
+		).Times(1),
+	)
+
+	redirectURL, err := app.InitOAuth2(fakeID)
+	require.NoError(t, err)
+	require.NotEmpty(t, redirectURL)
+	require.NotEmpty(t, state)
+
+	gomock.InOrder(
+		ss.EXPECT().VerifyOAuth2State(gomock.Eq(state)).Return(nil).Times(1),
+		ss.EXPECT().RefreshAndStoreToken(gomock.Any(), gomock.Any(), gomock.Any()).Return(&oauth2.Token{
+			AccessToken: "creator_oauth_token",
+		}, nil),
+		// The stored user cannot be decrypted (the encryption key was changed) and its mapping points to the same user:
+		// the connection goes through and replaces it.
+		ss.EXPECT().LoadUser(fakeID).Return(nil, fmt.Errorf("%w: cipher: message authentication failed", kvstore.ErrDecrypt)).Times(1),
+		ss.EXPECT().LoadMattermostUserID(fakeRemoteID).Return(fakeID, nil).Times(1),
+		aa.EXPECT().GetMattermostUser(fakeID).Return(&model.User{
+			Id:        fakeID,
+			Username:  "fake_username",
+			FirstName: "fake first name",
+			LastName:  "fake last name",
+		}, nil),
+		ss.EXPECT().ForceDeleteUser(fakeID).Return(nil).Times(1),
 		ss.EXPECT().StoreUser(gomock.Any()).Return(nil).Times(1),
 		ss.EXPECT().StoreUserInIndex(gomock.Any()).Return(nil).Times(1),
 		welcomer.EXPECT().AfterSuccessfullyConnect(fakeID, "mail-value").Return(nil).Times(1),
@@ -225,10 +339,12 @@ func TestCompleteOAuth2Errors(t *testing.T) {
 			registerResponder: statusOKGraphAPIResponder,
 			setup: func(d *Dependencies) {
 				papi := d.PluginAPI.(*mock_plugin_api.MockPluginAPI)
-				papi.EXPECT().GetMattermostUser("fake@mattermost.com").Return(&model.User{Username: "sample-username"}, nil)
+				papi.EXPECT().GetMattermostUser("other@mattermost.com").Return(&model.User{Username: "sample-username"}, nil)
 
 				ss := d.Store.(*mock_store.MockStore)
-				ss.EXPECT().LoadMattermostUserID("user-remote-id").Return("fake@mattermost.com", nil)
+				ss.EXPECT().LoadUser("fake@mattermost.com").Return(nil, store.ErrNotFound)
+				// The remote account is mapped to another Mattermost user.
+				ss.EXPECT().LoadMattermostUserID("user-remote-id").Return("other@mattermost.com", nil)
 				ss.EXPECT().VerifyOAuth2State(gomock.Eq("user_fake@mattermost.com")).Return(nil).Times(1)
 				ss.EXPECT().RefreshAndStoreToken(gomock.Any(), gomock.Any(), gomock.Any()).Return(&oauth2.Token{
 					AccessToken: "creator_oauth_token",
@@ -242,6 +358,67 @@ func TestCompleteOAuth2Errors(t *testing.T) {
 			},
 		},
 		{
+			name:              "Unreadable user connecting a remote account mapped to another user",
+			mattermostUserID:  "fake@mattermost.com",
+			code:              fakeCode,
+			state:             "user_fake@mattermost.com",
+			registerResponder: statusOKGraphAPIResponder,
+			setup: func(d *Dependencies) {
+				papi := d.PluginAPI.(*mock_plugin_api.MockPluginAPI)
+				papi.EXPECT().GetMattermostUser("other@mattermost.com").Return(&model.User{Username: "other-username"}, nil)
+
+				ss := d.Store.(*mock_store.MockStore)
+				ss.EXPECT().LoadUser("fake@mattermost.com").Return(nil, fmt.Errorf("%w: bad data", kvstore.ErrDecrypt))
+				ss.EXPECT().LoadMattermostUserID("user-remote-id").Return("other@mattermost.com", nil)
+				ss.EXPECT().ForceDeleteUser(gomock.Any()).Times(0)
+				ss.EXPECT().VerifyOAuth2State(gomock.Eq("user_fake@mattermost.com")).Return(nil).Times(1)
+				ss.EXPECT().RefreshAndStoreToken(gomock.Any(), gomock.Any(), gomock.Any()).Return(&oauth2.Token{
+					AccessToken: "creator_oauth_token",
+				}, nil)
+
+				poster := d.Poster.(*mock_bot.MockPoster)
+				poster.EXPECT().DM(
+					gomock.Eq("fake@mattermost.com"),
+					gomock.Eq(fmt.Sprintf(RemoteUserAlreadyConnected, config.Provider.DisplayName, "mail-value", "other-username", config.Provider.CommandTrigger)),
+				).Return("post_id", nil).Times(1)
+			},
+		},
+		{
+			name:              "Connected user cannot connect again from a second pending link",
+			mattermostUserID:  "fake@mattermost.com",
+			code:              fakeCode,
+			state:             "user_fake@mattermost.com",
+			registerResponder: statusOKGraphAPIResponder,
+			setup: func(d *Dependencies) {
+				ss := d.Store.(*mock_store.MockStore)
+				ss.EXPECT().LoadUser("fake@mattermost.com").Return(&store.User{MattermostUserID: "fake@mattermost.com"}, nil)
+				ss.EXPECT().StoreUser(gomock.Any()).Times(0)
+				ss.EXPECT().VerifyOAuth2State(gomock.Eq("user_fake@mattermost.com")).Return(nil).Times(1)
+				ss.EXPECT().RefreshAndStoreToken(gomock.Any(), gomock.Any(), gomock.Any()).Return(&oauth2.Token{
+					AccessToken: "creator_oauth_token",
+				}, nil)
+			},
+			expectError: "user is already connected",
+		},
+		{
+			name:              "Failing remote account mapping lookup stops the connection",
+			mattermostUserID:  "fake@mattermost.com",
+			code:              fakeCode,
+			state:             "user_fake@mattermost.com",
+			registerResponder: statusOKGraphAPIResponder,
+			setup: func(d *Dependencies) {
+				ss := d.Store.(*mock_store.MockStore)
+				ss.EXPECT().LoadUser("fake@mattermost.com").Return(nil, store.ErrNotFound)
+				ss.EXPECT().LoadMattermostUserID("user-remote-id").Return("", errors.New("failed plugin KVGet"))
+				ss.EXPECT().StoreUser(gomock.Any()).Times(0)
+				ss.EXPECT().VerifyOAuth2State(gomock.Eq("user_fake@mattermost.com")).Return(nil).Times(1)
+				ss.EXPECT().RefreshAndStoreToken(gomock.Any(), gomock.Any(), gomock.Any()).Return(&oauth2.Token{
+					AccessToken: "creator_oauth_token",
+				}, nil)
+			},
+			expectError: "failed plugin KVGet",
+		},
+		{
 			name:              "Remote user already connected to disabled account",
 			mattermostUserID:  "fake@mattermost.com",
 			code:              fakeCode,
@@ -249,10 +426,12 @@ func TestCompleteOAuth2Errors(t *testing.T) {
 			registerResponder: statusOKGraphAPIResponder,
 			setup: func(d *Dependencies) {
 				papi := d.PluginAPI.(*mock_plugin_api.MockPluginAPI)
-				papi.EXPECT().GetMattermostUser("fake@mattermost.com").Return(nil, store.ErrNotFound)
+				papi.EXPECT().GetMattermostUser("other@mattermost.com").Return(nil, store.ErrNotFound)
 
 				ss := d.Store.(*mock_store.MockStore)
-				ss.EXPECT().LoadMattermostUserID("user-remote-id").Return("fake@mattermost.com", nil)
+				ss.EXPECT().LoadUser("fake@mattermost.com").Return(nil, store.ErrNotFound)
+				// The remote account is mapped to another Mattermost user.
+				ss.EXPECT().LoadMattermostUserID("user-remote-id").Return("other@mattermost.com", nil)
 				ss.EXPECT().VerifyOAuth2State(gomock.Eq("user_fake@mattermost.com")).Return(nil).Times(1)
 				ss.EXPECT().RefreshAndStoreToken(gomock.Any(), gomock.Any(), gomock.Any()).Return(&oauth2.Token{
 					AccessToken: "creator_oauth_token",
@@ -288,12 +467,13 @@ func TestCompleteOAuth2Errors(t *testing.T) {
 			registerResponder: statusOKGraphAPIResponder,
 			setup: func(d *Dependencies) {
 				ss := d.Store.(*mock_store.MockStore)
+				ss.EXPECT().LoadUser("fake@mattermost.com").Return(nil, store.ErrNotFound)
 				aa := d.PluginAPI.(*mock_plugin_api.MockPluginAPI)
 				ss.EXPECT().RefreshAndStoreToken(gomock.Any(), gomock.Any(), gomock.Any()).Return(&oauth2.Token{
 					AccessToken: "creator_oauth_token",
 				}, nil)
 				ss.EXPECT().StoreUser(gomock.Any()).Return(errors.New("forced kvstore error")).Times(1)
-				ss.EXPECT().LoadMattermostUserID("user-remote-id").Return("", errors.New("connected user not found")).Times(1)
+				ss.EXPECT().LoadMattermostUserID("user-remote-id").Return("", store.ErrNotFound).Times(1)
 				aa.EXPECT().GetMattermostUser(fakeID).Return(&model.User{
 					Id:        fakeID,
 					Username:  "fake_username",
