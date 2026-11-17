@@ -70,6 +70,26 @@ func eventSubjects(events []*remote.Event) []string {
 	return result
 }
 
+func TestEventRulesTitleIgnoresOtherEventTypes(t *testing.T) {
+	rules, err := config.ParseStatusRules(`[
+		{"title_contains": "Office", "status": "dnd"},
+		{"title_contains": "day", "status": "away"},
+		{"event_type": "birthday", "status": "none", "emoji": "birthday"}
+	]`)
+	require.NoError(t, err)
+
+	// Google working location and birthday events are all-day events without guests.
+	assert.Nil(t, statusRuleOf(rules, testEvent("Office", "workingLocation", "free", 0)))
+	birthday := statusRuleOf(rules, testEvent("Happy birthday", "birthday", "free", 0))
+	require.NotNil(t, birthday, "an event_type rule still matches a birthday event")
+	assert.Equal(t, "birthday", birthday.Emoji)
+
+	assert.Equal(t, "dnd", statusRuleOf(rules, testEvent("Office hours", remote.EventTypeDefault, "busy", 0)).Status)
+	assert.Equal(t, "dnd", statusRuleOf(rules, testEvent("Out of office", remote.EventTypeOutOfOffice, "busy", 0)).Status)
+	assert.Equal(t, "away", statusRuleOf(rules, testEvent("Focus day", remote.EventTypeFocusTime, "busy", 0)).Status)
+	assert.Equal(t, "away", statusRuleOf(rules, testEvent("Payday", "", "busy", 0)).Status)
+}
+
 func TestEventRules(t *testing.T) {
 	rules := testStatusRules(t)
 

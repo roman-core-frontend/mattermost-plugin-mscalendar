@@ -17,12 +17,32 @@ const (
 	StatusRuleTitlePlaceholder = "{title}"
 )
 
+// Event types that title_contains rules match. They mirror remote.EventTypeDefault, remote.EventTypeOutOfOffice and
+// remote.EventTypeFocusTime (config cannot import remote). Other types, e.g. Google working location or birthday
+// events, are all-day events without guests that a title rule such as "Office" would match and rank above real
+// meetings, so only event_type rules can target them.
+const (
+	titleRuleEventTypeDefault     = "default"
+	titleRuleEventTypeOutOfOffice = "outOfOffice"
+	titleRuleEventTypeFocusTime   = "focusTime"
+)
+
+// titleRuleAppliesTo reports whether title_contains rules apply to events of the given type: regular (no type or
+// "default"), out-of-office and focus time events. The type is compared case-insensitively, like event_type rules.
+func titleRuleAppliesTo(eventType string) bool {
+	return eventType == "" ||
+		strings.EqualFold(eventType, titleRuleEventTypeDefault) ||
+		strings.EqualFold(eventType, titleRuleEventTypeOutOfOffice) ||
+		strings.EqualFold(eventType, titleRuleEventTypeFocusTime)
+}
+
 // StatusRule maps a calendar event to the Mattermost status that should be set while it is in progress.
 // Exactly one condition (EventType or TitleContains) must be set.
 type StatusRule struct {
 	// EventType matches the remote event type, e.g. "outOfOffice" or "focusTime".
 	EventType string `json:"event_type,omitempty"`
-	// TitleContains matches events whose title contains this text (case-insensitive).
+	// TitleContains matches regular, out-of-office and focus time events whose title contains this text
+	// (case-insensitive).
 	TitleContains string `json:"title_contains,omitempty"`
 
 	// Status is "dnd" or "away", "none" to leave the colored status unchanged,
@@ -86,7 +106,7 @@ func (r *StatusRule) matches(eventType, titleLower string) bool {
 	if r.EventType != "" {
 		return strings.EqualFold(r.EventType, eventType)
 	}
-	if r.TitleContains == "" {
+	if r.TitleContains == "" || !titleRuleAppliesTo(eventType) {
 		return false
 	}
 	needle := r.titleContainsLower
