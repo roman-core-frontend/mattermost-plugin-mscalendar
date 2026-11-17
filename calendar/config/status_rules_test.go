@@ -78,6 +78,24 @@ func TestFindStatusRule(t *testing.T) {
 	assert.Nil(t, FindStatusRule(nil, "outOfOffice", "Отпуск"))
 }
 
+func TestFindStatusRuleTitleOnlyMatchesSupportedEventTypes(t *testing.T) {
+	rules, err := ParseStatusRules(`[
+		{"title_contains": "Office", "status": "dnd"},
+		{"event_type": "workingLocation", "status": "none", "emoji": "house"}
+	]`)
+	require.NoError(t, err)
+
+	for _, eventType := range []string{"", "default", "outOfOffice", "focusTime", "DEFAULT", "OutOfOffice", "FOCUSTIME"} {
+		assert.Equal(t, &rules[0], FindStatusRule(rules, eventType, "Out of office"), "title rule matches type %q", eventType)
+	}
+	for _, eventType := range []string{"birthday", "fromGmail", "unknownType"} {
+		assert.Nil(t, FindStatusRule(rules, eventType, "Office party"), "title rule does not match type %q", eventType)
+	}
+	assert.Equal(t, &rules[1], FindStatusRule(rules, "workingLocation", "Office"),
+		"a working location event skips the title rule and is still matched by an event_type rule")
+	assert.Equal(t, &rules[1], FindStatusRule(rules, "WORKINGLOCATION", "Home"))
+}
+
 func TestStatusRuleCustomStatusText(t *testing.T) {
 	assert.Equal(t, "Фокус: Code review", (&StatusRule{Text: "Фокус: {title}"}).CustomStatusText("Code review"))
 	assert.Equal(t, "В отпуске", (&StatusRule{Text: "В отпуске"}).CustomStatusText("Отпуск"))
