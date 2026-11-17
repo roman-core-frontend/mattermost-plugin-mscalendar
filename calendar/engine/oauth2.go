@@ -14,7 +14,6 @@ import (
 
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/config"
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/store"
-	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/utils/kvstore"
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/utils/oauth2connect"
 )
 
@@ -90,14 +89,14 @@ func (app *oauth2App) CompleteOAuth2(authedUserID, code, state string) error {
 	}
 
 	// A connected user cannot connect again (e.g. from a second pending connect link). A stored user that cannot be
-	// decrypted (the encryption key was changed) is replaced by this connection, and removed right before the new
-	// user is stored.
+	// read (it cannot be decrypted, e.g. the encryption key was changed, or it is not valid JSON) is replaced by this
+	// connection, and removed right before the new user is stored.
 	_, loadErr := app.Store.LoadUser(mattermostUserID)
 	if loadErr == nil {
 		return errors.New("user is already connected")
 	}
-	// Any other load error (e.g. a corrupted record) is overwritten by storing the new user, as before.
-	replaceUnreadable := errors.Is(loadErr, kvstore.ErrDecrypt)
+	// Any other load error (e.g. a failed KV read) is overwritten by storing the new user, as before.
+	replaceUnreadable := store.IsUnreadableUser(loadErr)
 
 	// A mapping of the remote account to this same Mattermost user never blocks the connection: storing the user
 	// overwrites it.

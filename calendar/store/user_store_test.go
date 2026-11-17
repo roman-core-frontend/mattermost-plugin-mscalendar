@@ -6,6 +6,7 @@ package store
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/golang/mock/gomock"
@@ -1228,4 +1229,47 @@ func TestForceDeleteUser(t *testing.T) {
 		require.ErrorContains(t, s.ForceDeleteUser("userA"), "error deleting the remote account mapping")
 		require.Contains(t, users.data, "userA")
 	})
+}
+
+func TestIsUnreadableUser(t *testing.T) {
+	syntaxErr := json.Unmarshal([]byte("not json"), &User{})
+	require.Error(t, syntaxErr)
+	typeErr := json.Unmarshal([]byte(`{"MattermostUserID": 5}`), &User{})
+	require.Error(t, typeErr)
+
+	tcs := []struct {
+		name       string
+		err        error
+		unreadable bool
+	}{
+		{name: "no error", err: nil, unreadable: false},
+		{name: "not found", err: ErrNotFound, unreadable: false},
+		{name: "KV store error", err: errors.New("failed plugin KVGet"), unreadable: false},
+		{name: "decryption error", err: fmt.Errorf("%w: cipher: message authentication failed", kvstore.ErrDecrypt), unreadable: true},
+		{name: "JSON syntax error", err: syntaxErr, unreadable: true},
+		{name: "JSON type error", err: typeErr, unreadable: true},
+		{name: "wrapped JSON error", err: fmt.Errorf("loading user: %w", syntaxErr), unreadable: true},
+	}
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.unreadable, IsUnreadableUser(tc.err))
+		})
+	}
+}
+
+func TestLoadUserInvalidJSONIsUnreadable(t *testing.T) {
+	for name, data := range map[string]string{
+		"syntax error": "not json",
+		"type error":   `{"MattermostUserID": 5}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			mockAPI, store, _, _, _ := GetMockSetup(t)
+			mockAPI.On("KVGet", "user_c3b5020d58a049787bc969768465b890").Return([]byte(data), nil).Times(1)
+
+			_, err := store.LoadUser(MockMMUserID)
+			require.Error(t, err)
+			require.True(t, IsUnreadableUser(err))
+			mockAPI.AssertExpectations(t)
+		})
+	}
 }

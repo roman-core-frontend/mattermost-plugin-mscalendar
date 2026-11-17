@@ -4,6 +4,8 @@
 package command
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -18,19 +20,55 @@ import (
 )
 
 func TestUnreadableConnectionMessage(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	mscal := mock_engine.NewMockEngine(ctrl)
-	mscal.EXPECT().GetRemoteUser("user_id").Return(nil, fmt.Errorf("%w: cipher: message authentication failed", kvstore.ErrDecrypt)).Times(1)
+	jsonErr := json.Unmarshal([]byte("not json"), &struct{}{})
+	require.Error(t, jsonErr)
+	unreadableText := fmt.Sprintf(ConnectionUnreadableText, config.Provider.DisplayName, config.Provider.CommandTrigger)
+	require.Contains(t, unreadableText, "can no longer be read, for example because the plugin encryption key was changed.")
 
-	command := Command{
-		Context:   &plugin.Context{},
-		Args:      &model.CommandArgs{Command: fmt.Sprintf("/%s today", config.Provider.CommandTrigger), UserId: "user_id"},
-		ChannelID: "channel_id",
-		Config:    &config.Config{PluginURL: "http://localhost"},
-		Engine:    mscal,
+	tcs := []struct {
+		name           string
+		loadErr        error
+		expectedOutput string
+		expectedError  string
+	}{
+		{
+			name:           "stored user cannot be decrypted",
+			loadErr:        fmt.Errorf("%w: cipher: message authentication failed", kvstore.ErrDecrypt),
+			expectedOutput: unreadableText,
+		},
+		{
+			name:           "stored user is not valid JSON",
+			loadErr:        jsonErr,
+			expectedOutput: unreadableText,
+		},
+		{
+			name:          "failed KV read is a plain error",
+			loadErr:       errors.New("failed plugin KVGet"),
+			expectedError: "failed plugin KVGet",
+		},
 	}
 
-	out, _, err := command.Handle()
-	require.NoError(t, err)
-	require.Equal(t, fmt.Sprintf(ConnectionUnreadableText, config.Provider.DisplayName, config.Provider.CommandTrigger), out)
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			mscal := mock_engine.NewMockEngine(ctrl)
+			mscal.EXPECT().GetRemoteUser("user_id").Return(nil, tc.loadErr).Times(1)
+
+			command := Command{
+				Context:   &plugin.Context{},
+				Args:      &model.CommandArgs{Command: fmt.Sprintf("/%s today", config.Provider.CommandTrigger), UserId: "user_id"},
+				ChannelID: "channel_id",
+				Config:    &config.Config{PluginURL: "http://localhost"},
+				Engine:    mscal,
+			}
+
+			out, _, err := command.Handle()
+			if tc.expectedError != "" {
+				require.ErrorContains(t, err, tc.expectedError)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.expectedOutput, out)
+		})
+	}
 }

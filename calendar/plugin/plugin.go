@@ -392,10 +392,12 @@ func (p *Plugin) reEncryptUserData(e *Env, previousEncryptionKey string) {
 				"error", loadErr.Error(),
 			)
 			if delErr := e.Dependencies.Store.ForceDeleteUser(u.MattermostUserID); delErr != nil {
+				// Nothing was reset, so the user is not told to reconnect.
 				p.API.LogWarn("Failed to force-delete user during encryption key rotation",
 					"mm_user_id", u.MattermostUserID,
 					"error", delErr.Error(),
 				)
+				continue
 			}
 			p.notifyUserReconnect(e, u.MattermostUserID, "the plugin encryption key was changed")
 			continue
@@ -406,15 +408,17 @@ func (p *Plugin) reEncryptUserData(e *Env, previousEncryptionKey string) {
 				"mm_user_id", u.MattermostUserID,
 				"error", storeErr.Error(),
 			)
-			p.cleanupUserRelatedData(e, oldUser, u)
-			p.notifyUserReconnect(e, u.MattermostUserID, "the plugin encryption key was changed and your data could not be migrated")
+			if p.cleanupUserRelatedData(e, oldUser, u) {
+				p.notifyUserReconnect(e, u.MattermostUserID, "the plugin encryption key was changed and your data could not be migrated")
+			}
 		}
 	}
 }
 
 // cleanupUserRelatedData removes subscription and linked event data for a user
-// whose re-encryption failed, then force-deletes the core user records.
-func (p *Plugin) cleanupUserRelatedData(e *Env, user *store.User, indexEntry *store.UserShort) {
+// whose re-encryption failed, then force-deletes the core user records. It
+// reports whether the user records were deleted.
+func (p *Plugin) cleanupUserRelatedData(e *Env, user *store.User, indexEntry *store.UserShort) bool {
 	if subID := user.Settings.EventSubscriptionID; subID != "" {
 		if err := e.Dependencies.Store.DeleteUserSubscription(user, subID); err != nil {
 			p.API.LogWarn("Failed to delete subscription during encryption key rotation",
@@ -440,7 +444,9 @@ func (p *Plugin) cleanupUserRelatedData(e *Env, user *store.User, indexEntry *st
 			"mm_user_id", indexEntry.MattermostUserID,
 			"error", delErr.Error(),
 		)
+		return false
 	}
+	return true
 }
 
 func (p *Plugin) notifyUserReconnect(e *Env, mattermostUserID, reason string) {

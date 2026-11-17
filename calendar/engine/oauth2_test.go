@@ -4,6 +4,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -146,60 +147,99 @@ func TestCompleteOAuth2MappingToSelfDoesNotBlock(t *testing.T) {
 }
 
 func TestCompleteOAuth2ReplacesUnreadableUser(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
+	jsonErr := json.Unmarshal([]byte("not json"), &struct{}{})
+	require.Error(t, jsonErr)
 
-	httpmock.Activate()
-	defer httpmock.DeactivateAndReset()
-	statusOKGraphAPIResponder()
+	tcs := []struct {
+		name        string
+		loadErr     error
+		forceDelete bool
+	}{
+		{
+			// The encryption key was changed.
+			name:        "stored user cannot be decrypted",
+			loadErr:     fmt.Errorf("%w: cipher: message authentication failed", kvstore.ErrDecrypt),
+			forceDelete: true,
+		},
+		{
+			// E.g. an unencrypted store with corrupted data.
+			name:        "stored user is not valid JSON",
+			loadErr:     jsonErr,
+			forceDelete: true,
+		},
+		{
+			// Not an unreadable user: the new user overwrites the stored one, as upstream does.
+			name:        "failed KV read is overwritten without a force-delete",
+			loadErr:     errors.New("failed plugin KVGet"),
+			forceDelete: false,
+		},
+	}
 
-	app, env := newOAuth2TestApp(ctrl)
-	ss := env.Dependencies.Store.(*mock_store.MockStore)
-	aa := env.PluginAPI.(*mock_plugin_api.MockPluginAPI)
-	welcomer := env.Dependencies.Welcomer.(*mock_welcomer.MockWelcomer)
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
 
-	state := ""
-	gomock.InOrder(
-		ss.EXPECT().LoadUser(fakeID).Return(nil, errors.New("connected user not found")).Times(1),
-		ss.EXPECT().StoreOAuth2State(gomock.Any()).DoAndReturn(
-			func(s string) error {
-				if !strings.HasSuffix(s, "_"+fakeID) {
-					return errors.New("invalid state " + s)
-				}
-				state = s
-				return nil
-			},
-		).Times(1),
-	)
+			httpmock.Activate()
+			defer httpmock.DeactivateAndReset()
+			statusOKGraphAPIResponder()
 
-	redirectURL, err := app.InitOAuth2(fakeID)
-	require.NoError(t, err)
-	require.NotEmpty(t, redirectURL)
-	require.NotEmpty(t, state)
+			app, env := newOAuth2TestApp(ctrl)
+			ss := env.Dependencies.Store.(*mock_store.MockStore)
+			aa := env.PluginAPI.(*mock_plugin_api.MockPluginAPI)
+			welcomer := env.Dependencies.Welcomer.(*mock_welcomer.MockWelcomer)
 
-	gomock.InOrder(
-		ss.EXPECT().VerifyOAuth2State(gomock.Eq(state)).Return(nil).Times(1),
-		ss.EXPECT().RefreshAndStoreToken(gomock.Any(), gomock.Any(), gomock.Any()).Return(&oauth2.Token{
-			AccessToken: "creator_oauth_token",
-		}, nil),
-		// The stored user cannot be decrypted (the encryption key was changed) and its mapping points to the same user:
-		// the connection goes through and replaces it.
-		ss.EXPECT().LoadUser(fakeID).Return(nil, fmt.Errorf("%w: cipher: message authentication failed", kvstore.ErrDecrypt)).Times(1),
-		ss.EXPECT().LoadMattermostUserID(fakeRemoteID).Return(fakeID, nil).Times(1),
-		aa.EXPECT().GetMattermostUser(fakeID).Return(&model.User{
-			Id:        fakeID,
-			Username:  "fake_username",
-			FirstName: "fake first name",
-			LastName:  "fake last name",
-		}, nil),
-		ss.EXPECT().ForceDeleteUser(fakeID).Return(nil).Times(1),
-		ss.EXPECT().StoreUser(gomock.Any()).Return(nil).Times(1),
-		ss.EXPECT().StoreUserInIndex(gomock.Any()).Return(nil).Times(1),
-		welcomer.EXPECT().AfterSuccessfullyConnect(fakeID, "mail-value").Return(nil).Times(1),
-	)
+			state := ""
+			gomock.InOrder(
+				ss.EXPECT().LoadUser(fakeID).Return(nil, errors.New("connected user not found")).Times(1),
+				ss.EXPECT().StoreOAuth2State(gomock.Any()).DoAndReturn(
+					func(s string) error {
+						if !strings.HasSuffix(s, "_"+fakeID) {
+							return errors.New("invalid state " + s)
+						}
+						state = s
+						return nil
+					},
+				).Times(1),
+			)
 
-	err = app.CompleteOAuth2(fakeID, fakeCode, state)
-	require.NoError(t, err)
+			redirectURL, err := app.InitOAuth2(fakeID)
+			require.NoError(t, err)
+			require.NotEmpty(t, redirectURL)
+			require.NotEmpty(t, state)
+
+			// The mapping of the remote account points to the same user, so the connection goes through and
+			// replaces the stored user.
+			calls := []*gomock.Call{
+				ss.EXPECT().VerifyOAuth2State(gomock.Eq(state)).Return(nil).Times(1),
+				ss.EXPECT().RefreshAndStoreToken(gomock.Any(), gomock.Any(), gomock.Any()).Return(&oauth2.Token{
+					AccessToken: "creator_oauth_token",
+				}, nil),
+				ss.EXPECT().LoadUser(fakeID).Return(nil, tc.loadErr).Times(1),
+				ss.EXPECT().LoadMattermostUserID(fakeRemoteID).Return(fakeID, nil).Times(1),
+				aa.EXPECT().GetMattermostUser(fakeID).Return(&model.User{
+					Id:        fakeID,
+					Username:  "fake_username",
+					FirstName: "fake first name",
+					LastName:  "fake last name",
+				}, nil),
+			}
+			if tc.forceDelete {
+				calls = append(calls, ss.EXPECT().ForceDeleteUser(fakeID).Return(nil).Times(1))
+			} else {
+				ss.EXPECT().ForceDeleteUser(gomock.Any()).Times(0)
+			}
+			calls = append(calls,
+				ss.EXPECT().StoreUser(gomock.Any()).Return(nil).Times(1),
+				ss.EXPECT().StoreUserInIndex(gomock.Any()).Return(nil).Times(1),
+				welcomer.EXPECT().AfterSuccessfullyConnect(fakeID, "mail-value").Return(nil).Times(1),
+			)
+			gomock.InOrder(calls...)
+
+			err = app.CompleteOAuth2(fakeID, fakeCode, state)
+			require.NoError(t, err)
+		})
+	}
 }
 
 func TestInitOAuth2(t *testing.T) {

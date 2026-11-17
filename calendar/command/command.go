@@ -16,7 +16,6 @@ import (
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/config"
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/engine"
 	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/store"
-	"github.com/mattermost/mattermost-plugin-mscalendar/calendar/utils/kvstore"
 )
 
 // Handler handles commands
@@ -28,9 +27,9 @@ type Command struct {
 	ChannelID string
 }
 
-// ConnectionUnreadableText is shown when the stored connection cannot be decrypted, e.g. after the plugin encryption
-// key was regenerated.
-const ConnectionUnreadableText = "Your %s connection can no longer be read because the plugin encryption key was changed. Run `/%s connect` to connect again."
+// ConnectionUnreadableText is shown when the stored connection cannot be read, e.g. after the plugin encryption key
+// was regenerated or when the stored data is corrupted.
+const ConnectionUnreadableText = "Your %s connection can no longer be read, for example because the plugin encryption key was changed. Run `/%s connect` to connect again."
 
 func getNotConnectedText(pluginURL string) string {
 	return fmt.Sprintf(
@@ -192,7 +191,7 @@ func (c *Command) user() *engine.User {
 func (c *Command) requireConnectedUser(handle handleFunc) handleFunc {
 	return func(parameters ...string) (string, bool, error) {
 		connected, err := c.isConnected()
-		if errors.Is(err, kvstore.ErrDecrypt) {
+		if store.IsUnreadableUser(err) {
 			return fmt.Sprintf(ConnectionUnreadableText, config.Provider.DisplayName, config.Provider.CommandTrigger), false, nil
 		}
 		if err != nil {
